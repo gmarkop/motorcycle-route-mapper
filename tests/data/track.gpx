@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="Test">
+  <trk>
+    <name>Black Forest morning</name>
+    <trkseg>
+      <trkpt lat="48.4000" lon="8.2000"><ele>500.0</ele><time>2026-06-01T07:00:00Z</time></trkpt>
+      <trkpt lat="48.4100" lon="8.2100"><ele>560.0</ele><time>2026-06-01T07:05:00Z</time></trkpt>
+      <trkpt lat="48.4200" lon="8.2200"><ele>620.0</ele><time>2026-06-01T07:10:00Z</time></trkpt>
+      <trkpt lat="48.4300" lon="8.2300"><ele>540.0</ele><time>2026-06-01T07:15:00Z</time></trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="48.4500" lon="8.2600"><ele>545.0</ele></trkpt>
+      <trkpt lat="48.4600" lon="8.2700"><ele>590.0</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Motorcycle Route Mapper</title>
+  <!-- Inline SVG icon: saves the browser's automatic /favicon.ico request,
+       which would otherwise be a 404 in the log on every page load. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314171c'/%3E%3Cpath d='M10 27c0-7 8-6 8-11S10 11 10 5' stroke='%23ff7a2f' stroke-width='3.5' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='8' r='3' fill='%234ea8ff'/%3E%3C/svg%3E">
+  <!-- Leaflet is vendored rather than loaded from a CDN so the app still starts
+       with no internet connection: the interface and your route work offline,
+       and only the map tiles need the network. See vendor/leaflet/LICENSE. -->
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="layout">
+    <aside id="sidebar">
+      <header>
+        <h1>Route Mapper</h1>
+        <p class="subtitle">GPX &middot; KML &middot; KMZ, with live conditions</p>
+      </header>
+
+      <section id="drop-zone" class="panel dropzone">
+        <input type="file" id="file-input" accept=".gpx,.kml,.kmz" hidden>
+        <p><strong>Drop a route file here</strong></p>
+        <p class="muted">or <button type="button" id="browse" class="link">browse</button></p>
+        <p class="muted tiny">Garmin GPX, Google Earth KML, KMZ</p>
+      </section>
+
+      <div id="error" class="panel error" hidden></div>
+
+      <section id="summary" class="panel" hidden>
+        <h2 id="route-name">Route</h2>
+        <dl class="stats">
+          <div><dt>Distance</dt><dd id="stat-distance">–</dd></div>
+          <div><dt>Ascent</dt><dd id="stat-ascent">–</dd></div>
+          <div><dt>Corners</dt><dd id="stat-curvy">–</dd></div>
+          <div><dt>Points</dt><dd id="stat-points">–</dd></div>
+        </dl>
+        <div id="waypoint-summary" class="muted tiny"></div>
+      </section>
+
+      <section id="plan" class="panel" hidden>
+        <h2>Ride plan</h2>
+        <label for="departure">Departure</label>
+        <input type="datetime-local" id="departure">
+        <label for="speed">Average moving speed: <span id="speed-value">65</span> km/h</label>
+        <input type="range" id="speed" min="30" max="130" step="5" value="65">
+        <p class="muted tiny" id="eta-line"></p>
+        <button type="button" id="refresh" class="primary">Refresh live data</button>
+      </section>
+
+      <section id="weather-panel" class="panel" hidden>
+        <h2>Weather along the route</h2>
+        <div id="weather-verdict"></div>
+        <ul id="weather-list" class="list"></ul>
+      </section>
+
+      <section id="hazard-panel" class="panel" hidden>
+        <h2>Closures &amp; roadworks</h2>
+        <div id="hazard-note" class="muted tiny"></div>
+        <ul id="hazard-list" class="list"></ul>
+      </section>
+
+      <section id="alternate-panel" class="panel" hidden>
+        <h2>Alternate routes</h2>
+        <div id="alternate-note" class="muted tiny"></div>
+        <ul id="alternate-list" class="list"></ul>
+      </section>
+
+      <footer class="muted tiny">
+        Map data &copy; OpenStreetMap contributors &middot;
+        weather by Open-Meteo &middot; routing by OSRM.
+        Closure data reflects long-lived OSM restrictions, not live traffic.
+      </footer>
+    </aside>
+
+    <main id="map-area">
+      <div id="map"></div>
+      <div id="profile-wrap" hidden>
+        <svg id="profile" preserveAspectRatio="none" role="img"
+             aria-label="Elevation profile"></svg>
+        <div id="profile-readout" class="muted tiny"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

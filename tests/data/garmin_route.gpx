@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3"
+     xmlns:trp="http://www.garmin.com/xmlschemas/TripExtensions/v1"
+     version="1.1" creator="Garmin BaseCamp 4.8.11">
+  <metadata>
+    <name>Stelvio Loop</name>
+  </metadata>
+  <wpt lat="46.5290" lon="10.4540">
+    <ele>2757.0</ele>
+    <name>Passo dello Stelvio</name>
+    <desc>Summit cafe, cash only</desc>
+    <sym>Summit</sym>
+  </wpt>
+  <rte>
+    <name>Stelvio Loop</name>
+    <rtept lat="46.6183" lon="10.4550">
+      <name>Prad am Stilfserjoch</name>
+      <extensions>
+        <trp:ViaPoint/>
+        <gpxx:RoutePointExtension>
+          <gpxx:rpt lat="46.6100" lon="10.4560"/>
+          <gpxx:rpt lat="46.6020" lon="10.4575"/>
+        </gpxx:RoutePointExtension>
+      </extensions>
+    </rtept>
+    <rtept lat="46.5900" lon="10.4590">
+      <extensions>
+        <trp:ShapingPoint/>
+        <gpxx:RoutePointExtension>
+          <gpxx:rpt lat="46.5700" lon="10.4600"/>
+          <gpxx:rpt lat="46.5500" lon="10.4580"/>
+        </gpxx:RoutePointExtension>
+      </extensions>
+    </rtept>
+    <rtept lat="46.5290" lon="10.4540">
+      <name>Passo dello Stelvio</name>
+      <extensions>
+        <trp:ViaPoint/>
+      </extensions>
+    </rtept>
+  </rte>
+</gpx>

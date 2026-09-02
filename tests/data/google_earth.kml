@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+  <Document>
+    <name>Route des Grandes Alpes</name>
+    <Placemark>
+      <name>Col du Galibier</name>
+      <description><![CDATA[<b>2642 m</b> — closed in winter]]></description>
+      <Point>
+        <coordinates>6.4075,45.0640,2642</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name>Leg 1</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          6.4000,45.0500,1800
+          6.4030,45.0560,2100
+          6.4075,45.0640,2642
+          6.4120,45.0700,2400
+        </coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>

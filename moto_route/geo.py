@@ -1,0 +1,281 @@
+"""Geodesic helpers.
+
+Everything here works on plain (lat, lon) tuples in degrees so the functions
+stay usable from the parsers, the services and the tests without dragging the
+domain models along.
+
+Distances are metres. Where a flat-earth approximation is good enough (point to
+segment distance over a few kilometres) we project to a local equirectangular
+plane, which is far cheaper than repeated haversine calls and accurate to well
+under a metre at motorcycle-route scales.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Iterable, Sequence
+
+EARTH_RADIUS_M = 6_371_008.8
+
+LatLon = tuple[float, float]
+
+
+def haversine_m(a: LatLon, b: LatLon) -> float:
+    """Great-circle distance between two (lat, lon) points, in metres."""
+    lat1, lon1 = math.radians(a[0]), math.radians(a[1])
+    lat2, lon2 = math.radians(b[0]), math.radians(b[1])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(h))
+
+
+def bearing_deg(a: LatLon, b: LatLon) -> float:
+    """Initial compass bearing from a to b, 0-360 degrees (0 = north)."""
+    lat1, lat2 = math.radians(a[0]), math.radians(b[0])
+    dlon = math.radians(b[1] - a[1])
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def cumulative_distances(points: Sequence[LatLon]) -> list[float]:
+    """Distance from the first point to each point, in metres.
+
+    The returned list is the same length as ``points`` and starts with 0.0, so
+    ``cumulative[-1]`` is the total length of the line.
+    """
+    out = [0.0]
+    for prev, cur in zip(points, points[1:]):
+        out.append(out[-1] + haversine_m(prev, cur))
+    return out
+
+
+def total_distance_m(points: Sequence[LatLon]) -> float:
+    if len(points) < 2:
+        return 0.0
+    return cumulative_distances(points)[-1]
+
+
+def bounding_box(points: Iterable[LatLon], margin_m: float = 0.0) -> tuple[float, float, float, float]:
+    """Return (min_lat, min_lon, max_lat, max_lon), optionally grown by a margin."""
+    lats, lons = [], []
+    for lat, lon in points:
+        lats.append(lat)
+        lons.append(lon)
+    if not lats:
+        raise ValueError("bounding_box() needs at least one point")
+
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+
+    if margin_m > 0:
+        dlat = margin_m / 111_320.0
+        # A degree of longitude shrinks with latitude; use the widest edge so
+        # the box is never too small.
+        widest = max(abs(min_lat), abs(max_lat))
+        dlon = margin_m / (111_320.0 * max(math.cos(math.radians(widest)), 0.01))
+        min_lat, max_lat = min_lat - dlat, max_lat + dlat
+        min_lon, max_lon = min_lon - dlon, max_lon + dlon
+
+    return (min_lat, min_lon, max_lat, max_lon)
+
+
+def _local_xy(point: LatLon, origin: LatLon) -> tuple[float, float]:
+    """Project to metres on a plane tangent at ``origin`` (equirectangular)."""
+    x = math.radians(point[1] - origin[1]) * math.cos(math.radians(origin[0])) * EARTH_RADIUS_M
+    y = math.radians(point[0] - origin[0]) * EARTH_RADIUS_M
+    return x, y
+
+
+def point_to_segment_m(p: LatLon, a: LatLon, b: LatLon) -> float:
+    """Shortest distance from point ``p`` to the segment ``a``-``b``, in metres."""
+    px, py = _local_xy(p, a)
+    bx, by = _local_xy(b, a)
+    seg_len_sq = bx * bx + by * by
+    if seg_len_sq == 0.0:
+        return math.hypot(px, py)
+    # Projection factor of p onto the segment, clamped to the segment itself.
+    t = max(0.0, min(1.0, (px * bx + py * by) / seg_len_sq))
+    dx, dy = px - t * bx, py - t * by
+    return math.hypot(dx, dy)
+
+
+def distance_to_polyline_m(p: LatLon, line: Sequence[LatLon]) -> float:
+    """Shortest distance from ``p`` to a polyline. Used to filter hazards."""
+    if not line:
+        return float("inf")
+    if len(line) == 1:
+        return haversine_m(p, line[0])
+    return min(point_to_segment_m(p, a, b) for a, b in zip(line, line[1:]))
+
+
+#: Douglas-Peucker is O(n log n) on well-behaved input but degrades to O(n^2)
+#: when almost every point survives — a track with GPS noise larger than the
+#: tolerance does exactly that. The budget caps the work: once spent, the
+#: remaining segments stop splitting. The result is a slightly coarser line, not
+#: a wrong one, which is the right trade for a file we did not write.
+MAX_SIMPLIFY_EVALUATIONS = 1_500_000
+
+
+def radial_filter_indices(points: Sequence[LatLon], min_dist_m: float) -> list[int]:
+    """Indices of points at least ``min_dist_m`` from the previously kept one.
+
+    A cheap O(n) first pass. Its real job is removing the cluster of near
+    identical points a GPS emits at a red light, which is both the most common
+    redundancy in a recorded track and the input that makes Douglas-Peucker
+    quadratic.
+    """
+    n = len(points)
+    if n < 3 or min_dist_m <= 0:
+        return list(range(n))
+
+    keep = [0]
+    anchor = points[0]
+    for i in range(1, n - 1):
+        if haversine_m(anchor, points[i]) >= min_dist_m:
+            keep.append(i)
+            anchor = points[i]
+    keep.append(n - 1)
+    return keep
+
+
+def douglas_peucker_indices(
+    points: Sequence[LatLon],
+    tolerance_m: float,
+    max_evaluations: int = MAX_SIMPLIFY_EVALUATIONS,
+) -> list[int]:
+    """Indices of the points Douglas-Peucker keeps.
+
+    Every dropped point lies within ``tolerance_m`` of the simplified line —
+    unless the evaluation budget runs out, in which case some segments are left
+    unsplit and the line is coarser than requested.
+
+    Implemented with an explicit stack instead of recursion so a long track
+    cannot hit Python's recursion limit.
+    """
+    n = len(points)
+    if n < 3 or tolerance_m <= 0:
+        return list(range(n))
+
+    keep = [False] * n
+    keep[0] = keep[n - 1] = True
+    stack = [(0, n - 1)]
+    budget = max_evaluations
+
+    while stack:
+        start, end = stack.pop()
+        if end <= start + 1:
+            continue
+
+        budget -= end - start - 1
+        if budget < 0:
+            break
+
+        a, b = points[start], points[end]
+        worst_dist, worst_idx = -1.0, -1
+        for i in range(start + 1, end):
+            d = point_to_segment_m(points[i], a, b)
+            if d > worst_dist:
+                worst_dist, worst_idx = d, i
+        if worst_dist > tolerance_m:
+            keep[worst_idx] = True
+            stack.append((start, worst_idx))
+            stack.append((worst_idx, end))
+
+    return [i for i, k in enumerate(keep) if k]
+
+
+def simplify_indices(points: Sequence[LatLon], tolerance_m: float) -> list[int]:
+    """Indices of the points worth drawing, at the given tolerance.
+
+    Two passes, in the order the classic simplify.js uses: a radial filter to
+    throw away clustered points cheaply, then Douglas-Peucker on the survivors
+    to preserve the shape. The pre-pass roughly doubles the worst-case error
+    (a dropped point can be off by the tolerance from both passes) and in
+    exchange makes a pathological track fast instead of unbounded.
+    """
+    n = len(points)
+    if n < 3 or tolerance_m <= 0:
+        return list(range(n))
+
+    coarse = radial_filter_indices(points, tolerance_m)
+    subset = [points[i] for i in coarse]
+    return [coarse[k] for k in douglas_peucker_indices(subset, tolerance_m)]
+
+
+def simplify(points: Sequence[LatLon], tolerance_m: float) -> list[LatLon]:
+    """Simplified copy of a polyline. See :func:`simplify_indices`."""
+    return [points[i] for i in simplify_indices(points, tolerance_m)]
+
+
+def sample_every(
+    points: Sequence[LatLon],
+    interval_m: float,
+    max_samples: int | None = None,
+) -> list[tuple[int, float]]:
+    """Pick points spaced roughly ``interval_m`` apart along the line.
+
+    Returns ``(index, distance_from_start_m)`` pairs, always including the first
+    and last point. Weather is requested at these samples rather than at every
+    track point: one forecast per ~25 km is plenty, and it keeps us well inside
+    the free API's fair-use limits.
+    """
+    if not points:
+        return []
+    if len(points) == 1:
+        return [(0, 0.0)]
+
+    cumulative = cumulative_distances(points)
+    total = cumulative[-1]
+
+    if max_samples is not None and max_samples >= 2:
+        # Widen the interval rather than truncate the route, so the samples
+        # still span the whole ride.
+        interval_m = max(interval_m, total / (max_samples - 1))
+
+    out: list[tuple[int, float]] = [(0, 0.0)]
+    next_mark = interval_m
+    for i, dist in enumerate(cumulative):
+        if dist >= next_mark and i != len(points) - 1:
+            out.append((i, dist))
+            # Skip past any marks the previous gap jumped over.
+            next_mark = (math.floor(dist / interval_m) + 1) * interval_m
+    last = len(points) - 1
+    if out[-1][0] != last:
+        out.append((last, total))
+    return out
+
+
+def curviness_deg_per_km(points: Sequence[LatLon], min_segment_m: float = 40.0) -> float:
+    """How twisty a line is: total heading change per kilometre.
+
+    A motorway sits near 0-20, a decent country road around 60-150, and an
+    Alpine pass runs into the hundreds. This is the metric a rider actually
+    wants when comparing two ways round a valley — "5 minutes slower" says far
+    less than "three times as many corners".
+
+    Short segments are merged before measuring, because GPS jitter between two
+    points 3 m apart produces large, meaningless heading changes.
+    """
+    if len(points) < 3:
+        return 0.0
+
+    # Resample onto vertices at least ``min_segment_m`` apart to suppress noise.
+    anchors = [points[0]]
+    for point in points[1:]:
+        if haversine_m(anchors[-1], point) >= min_segment_m:
+            anchors.append(point)
+    if len(anchors) < 3:
+        return 0.0
+
+    total_turn = 0.0
+    for a, b, c in zip(anchors, anchors[1:], anchors[2:]):
+        delta = abs(bearing_deg(b, c) - bearing_deg(a, b))
+        # Heading change wraps at 360; 350 degrees right is 10 degrees left.
+        total_turn += min(delta, 360.0 - delta)
+
+    length_km = total_distance_m(anchors) / 1000.0
+    if length_km <= 0:
+        return 0.0
+    return total_turn / length_km
