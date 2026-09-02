@@ -6,7 +6,11 @@ road closures, and alternate ways round.
 
 It runs on your own machine. No account, no subscription, no API key.
 
-![Sidebar with route stats, weather scores and closures beside a map of the route](docs/screenshot.png)
+![Sidebar with route stats, weather scores, fuel planning and closures beside a map of the route](docs/screenshot.png)
+
+Colour the same route by how twisty it is:
+
+![The route coloured from blue through green to amber by corners per kilometre](docs/curviness.png)
 
 ---
 
@@ -61,6 +65,38 @@ at its position along the route ("closed gate at km 62").
 time. "12 minutes longer, three times the corners" is usually the right trade on
 a bike, and no car router will ever offer it to you.
 
+**Plans fuel around a motorcycle tank, not a car's.** Fuel stations near the
+route are sorted by position along it and run through a greedy plan: ride to the
+last pump still in range, fill up, repeat. A bike carries 15-20 litres, not 60,
+so "next fuel in 140 km" is a real problem — and in the Alps or rural Spain the
+gap between stations genuinely exceeds a tank. Any stretch you cannot cross is
+reported **before you leave**, not when the fuel light comes on. Coffee stops and
+viewpoints come along for the ride, each with its own corridor width: fuel is
+worth a detour, a cafe is only worth it if it is already on the way.
+
+**Colours the route by how twisty it is.** A single curviness number for a whole
+ride is the wrong tool — 100 km of motorway and 20 km of hairpins average out to
+"mildly interesting" and hide both halves. The heat map walks a sliding window
+along the route instead, so you can see at a glance which third of the day is
+the good bit.
+
+**Reads live incidents, if you have a feed.** OpenStreetMap knows about a pass
+gated shut for winter; it does not know about this morning's crash. That needs a
+road authority, so there is a small provider interface with two implementations:
+a generic GeoJSON adapter for any feed you point it at, and Germany's keyless
+Autobahn API, which works out which motorways your route uses from OSM and needs
+no configuration at all.
+
+**Caches map tiles for the valley with no signal.** One button caches the tiles
+along your route so the map still works offline. Bounded on purpose — see the
+limits below.
+
+**Writes the whole lot back out as GPX.** The findings are no use stuck on the
+laptop while you ride off with the original file. The export folds the weather
+warnings, closures and planned fuel stops back in as ordinary waypoints with
+Garmin symbol names, so the device shows them as proper icons and no device
+needs to understand anything specific to this app.
+
 Plus an elevation profile you can hover to see where you are on the map, and a
 [Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
 simplification pass so a 20 000-point track sends about 250 points to the browser.
@@ -83,8 +119,25 @@ Worth knowing before you rely on any of it:
   `MOTO_OSRM_URL` at it.
 - **Open-Meteo is free for non-commercial use.** Responses are cached for 15
   minutes on disk so normal planning stays well inside fair use.
-- **Map tiles need a connection.** Leaflet itself is vendored locally, so the
-  interface and your route work with no internet — only the tiles go blank.
+- **Offline tiles are deliberately limited.** OpenStreetMap's tile usage policy
+  forbids bulk downloading and names 250 tiles as the limit for an area, so that
+  is the default cap and requests are spaced out rather than fired in a burst.
+  Tiles are chosen along the route corridor rather than over its bounding box,
+  which is what makes 250 enough to be useful. Raise `MOTO_MAX_CACHED_TILES`
+  only when pointing at a tile server you run yourself.
+- **Offline caching needs a secure context.** Service workers only register over
+  https or on localhost, so it works when you run this on your own machine but
+  not when you reach it from a phone over plain `http://192.168.x.x`.
+- **The Autobahn provider is unverified.** The live endpoints were unreachable
+  from the environment this was built in, so the response mapping follows the
+  documented shape and is covered by tests against recorded fixtures — but it has
+  never seen the real service. It fails soft: a wrong guess about the schema
+  shows an empty layer, not a broken app. Confirm it returns real data before
+  trusting it.
+- **Incident coverage is only what you configure.** An empty incidents layer
+  means no feed covers that road, not that the road is clear.
+- **Leaflet is vendored locally**, so the interface and your route work with no
+  internet at all — only uncached tiles go blank.
 - **No authentication.** `run.py` binds to localhost for that reason. Think
   before using `--host 0.0.0.0`.
 
@@ -97,6 +150,7 @@ moto_route/
 ├── geo.py             Distances, bearings, simplification, sampling, curviness
 ├── models.py          GeoPoint / Waypoint / Route — the one shape everything speaks
 ├── config.py          Settings from environment variables
+├── export.py          Writes the enriched ride back out as GPX
 ├── api.py             FastAPI endpoints and the in-memory route store
 ├── parsers/
 │   ├── common.py      Namespace-agnostic XML helpers, and the XML-bomb guard
@@ -107,9 +161,21 @@ moto_route/
 │   ├── cache.py       TTL cache, memory then disk
 │   ├── weather.py     Open-Meteo + the rideability score
 │   ├── hazards.py     Overpass closures within a corridor of the route
+│   ├── pois.py        Fuel, coffee, viewpoints + tank-range planning
+│   ├── incidents.py   Road-authority feeds behind a provider interface
 │   └── alternates.py  OSRM alternates, ranked by corners
-└── static/            Leaflet frontend — no build step, no framework
+└── static/
+    ├── sw.js          Service worker: app shell + offline map tiles
+    └── js/
+        ├── app.js     Entry point, orchestration, elevation profile
+        ├── mapview.js Everything that draws on the map
+        ├── panels.js  Sidebar rendering
+        ├── tiles.js   Slippy-map maths and tile prefetching
+        └── format.js  Pure formatting helpers
 ```
+
+The frontend uses native ES modules — no bundler, no build step, no framework.
+Open any file and what you see is what the browser runs.
 
 The shape of the thing: **parse once, enrich independently.** A file is parsed
 into a `Route` and kept in memory under an id. The browser then asks for weather,
@@ -177,7 +243,11 @@ Useful if you want to script it or build your own frontend.
 | `GET` | `/api/routes/{id}/weather` | `?departure=<ISO8601>&speed_kmh=<n>` |
 | `GET` | `/api/routes/{id}/hazards` | Closures within the corridor |
 | `GET` | `/api/routes/{id}/alternates` | Alternate routes, ranked |
+| `GET` | `/api/routes/{id}/pois` | `?tank_range_km=<n>` — fuel, cafes, viewpoints + the fuel plan |
+| `GET` | `/api/routes/{id}/incidents` | Live road-authority incidents |
+| `GET` | `/api/routes/{id}/curviness` | `?window_m=<n>` — curviness sampled along the route |
 | `GET` | `/api/routes/{id}/elevation` | Distance/elevation pairs for the profile |
+| `GET` | `/api/routes/{id}/export.gpx` | The enriched ride as a downloadable GPX |
 
 Interactive documentation is generated at <http://127.0.0.1:8000/docs>.
 
@@ -204,6 +274,17 @@ All optional, all environment variables.
 | `MOTO_HAZARD_CORRIDOR_M` | `150` | How far off-route a closure still counts |
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
+| `MOTO_TANK_RANGE_KM` | `250` | Usable tank range for fuel planning |
+| `MOTO_FUEL_RESERVE` | `0.15` | Fraction of the tank held back as reserve |
+| `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |
+| `MOTO_CAFE_CORRIDOR_M` | `300` | Same, for cafes |
+| `MOTO_VIEWPOINT_CORRIDOR_M` | `500` | Same, for viewpoints |
+| `MOTO_MAX_CACHED_TILES` | `250` | Offline tile cap — the OSM policy limit |
+| `MOTO_TILE_DELAY_MS` | `120` | Pause between prefetch requests |
+| `MOTO_INCIDENT_FEEDS` | — | Comma-separated GeoJSON incident feed URLs |
+| `MOTO_AUTOBAHN` | `true` | Enable the German Autobahn provider |
+| `MOTO_AUTOBAHN_ROADS` | — | Pin the motorways (e.g. `A8,A81`); empty auto-detects |
+| `MOTO_INCIDENT_CORRIDOR_M` | `500` | How far off-route an incident still counts |
 
 Weather and hazard TTLs (`MOTO_WEATHER_TTL`, `MOTO_HAZARD_TTL`,
 `MOTO_ROUTING_TTL`) and upload limits (`MOTO_MAX_UPLOAD`) are configurable too;
@@ -213,21 +294,40 @@ see `config.py`.
 
 ## Where to take it next
 
-Roughly in order of value for effort:
+The first five ideas that were listed here are now built. What is left:
 
-1. **Fuel and coffee stops** — Overpass already knows every `amenity=fuel`.
-   The corridor query in `services/hazards.py` is the pattern to copy.
-2. **Cache map tiles** — a service worker storing tiles would make the whole
-   app usable with no signal at all, which is the real touring case.
-3. **Export the enriched route** — write a GPX back out with the weather
-   warnings as waypoint descriptions, and load it onto the Garmin.
-4. **National road-authority feeds** — several European countries publish open
-   incident data. One provider module each, behind the same interface
-   `services/hazards.py` already uses.
-5. **A curviness heat map** — you already compute heading change per kilometre;
-   colouring the route by it turns the number into a picture.
+1. **A LICENSE file** — without one, "public repo" legally means look, don't
+   touch. MIT or Apache-2.0 if you want others to use it.
+2. **More incident providers** — several European countries publish open feeds.
+   Each is one small class implementing `IncidentProvider`; the generic GeoJSON
+   adapter may already handle yours with nothing but a URL.
+3. **Verify the Autobahn provider** against the live API and adjust the mapping
+   if the real payloads differ from the documented shape.
+4. **Multi-day tours** — split a long route into days with overnight stops, and
+   forecast each day from its own departure time rather than one continuous ride.
+5. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
+   ten minutes costs more than any weather.
+6. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
+   one opinion. Someone on a faired tourer with heated grips should weight cold
+   and rain far lower than someone on a naked bike.
 
 ---
+
+## A note on the tests
+
+173 of them, and they run offline in about ten seconds. Two patterns are worth
+copying:
+
+**HTTP is mocked at the transport, not the function.** Every service test uses
+`httpx.MockTransport`, so the real request-building, status handling and JSON
+parsing all execute — only the socket is fake. Patching the service function
+itself would test nothing but the mock.
+
+**Judgement calls are tested as relationships.** The rideability score and the
+fuel planner are opinions, so the tests assert what must stay true — freezing
+rain always scores worse than a merely wet day; the planner always picks the
+furthest reachable pump — rather than exact numbers that would break the moment
+you retune a weight.
 
 ## Licence and attribution
 

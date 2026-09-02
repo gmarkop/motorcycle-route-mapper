@@ -131,3 +131,68 @@ footer { margin-top: 18px; line-height: 1.45; }
              border-bottom: 1px solid var(--border); }
   #map-area { min-height: 50vh; }
 }
+
+/* ---------------------------------------------------- touring feature styles */
+
+button.secondary {
+  width: 100%; margin-top: 8px; padding: 8px;
+  background: transparent; color: var(--text); font-weight: 500;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--border); }
+
+/* POI category filters */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
+.chip {
+  font-size: 12px; padding: 4px 9px; border-radius: 20px; cursor: pointer;
+  background: var(--panel); color: var(--muted);
+  border: 1px solid var(--border);
+}
+.chip.active { color: var(--text); border-color: var(--accent); background: #2a2118; }
+
+/* Map overlay: curviness toggle and its legend */
+#map-area { position: relative; }
+#map-overlay {
+  position: absolute; top: 10px; left: 50px; z-index: 500;
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  pointer-events: none;
+}
+#map-overlay > * { pointer-events: auto; }
+
+.overlay-button {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 11px; font-size: 12px; cursor: pointer;
+  box-shadow: 0 1px 6px #0006;
+}
+.overlay-button:hover { border-color: var(--accent); }
+.overlay-button.active { background: var(--accent); color: #14171c; font-weight: 600; }
+
+#curviness-legend {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 9px; width: 190px;
+  box-shadow: 0 1px 6px #0006;
+}
+.legend-bar { height: 8px; border-radius: 4px; margin: 5px 0 3px; }
+.legend-scale {
+  display: flex; justify-content: space-between;
+  font-size: 10px; color: var(--muted);
+}
+
+/* Live incident pins, visually distinct from the OSM closure dots */
+.incident-pin { background: none; border: none; }
+.incident-dot {
+  display: block; width: 12px; height: 12px;
+  transform: rotate(45deg);
+  border: 2px solid #14171c;
+  background: var(--warn);
+}
+.incident-dot.closure { background: var(--bad); }
+.incident-dot.roadworks { background: var(--warn); }
+.incident-dot.warning { background: #ffa23d; }
+.incident-dot.incident { background: #4ea8ff; }
+
+@media (max-width: 820px) {
+  #map-overlay { left: 10px; top: 60px; }
+}

@@ -23,15 +23,17 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, geo
+from . import __version__, export, geo
 from .config import Settings, get_settings
 from .models import Route
 from .parsers import RouteParseError, SUPPORTED_EXTENSIONS, parse_route_bytes
 from .services import alternates as alternates_service
 from .services import hazards as hazards_service
+from .services import incidents as incidents_service
+from .services import pois as pois_service
 from .services import weather as weather_service
 from .services.cache import TTLCache
 
@@ -91,6 +93,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.weather_cache = TTLCache(settings.cache_dir, "weather")
     app.state.hazard_cache = TTLCache(settings.cache_dir, "hazards")
     app.state.routing_cache = TTLCache(settings.cache_dir, "routing")
+    app.state.poi_cache = TTLCache(settings.cache_dir, "pois")
+    app.state.incident_cache = TTLCache(settings.cache_dir, "incidents")
 
     # ------------------------------------------------------------------ routes
 
@@ -101,6 +105,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "version": __version__,
             "offline": settings.offline,
             "supported_formats": list(SUPPORTED_EXTENSIONS),
+            # The frontend reads its defaults from here rather than hard-coding
+            # them, so changing an environment variable moves both halves.
+            "defaults": {
+                "speed_kmh": settings.default_speed_kmh,
+                "tank_range_km": settings.tank_range_km,
+                "max_cached_tiles": settings.max_cached_tiles,
+                "tile_prefetch_delay_ms": settings.tile_prefetch_delay_ms,
+            },
+            "incidents_configured": bool(settings.incident_feeds) or settings.autobahn_enabled,
         }
 
     @app.post("/api/routes")
@@ -156,6 +169,101 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             route, settings, app.state.http, app.state.routing_cache
         )
 
+    @app.get("/api/routes/{route_id}/pois")
+    async def route_pois(
+        route_id: str,
+        tank_range_km: float = Query(0, ge=0, le=1000,
+                                     description="Usable tank range; 0 uses the configured default"),
+    ) -> dict[str, Any]:
+        route = store.get(route_id)
+        return await pois_service.find_pois(
+            route, settings, app.state.http, app.state.poi_cache,
+            tank_range_km=tank_range_km or None,
+        )
+
+    @app.get("/api/routes/{route_id}/incidents")
+    async def route_incidents(route_id: str) -> dict[str, Any]:
+        route = store.get(route_id)
+        return await incidents_service.find_incidents(
+            route, settings, app.state.http, app.state.incident_cache
+        )
+
+    @app.get("/api/routes/{route_id}/curviness")
+    async def route_curviness(
+        route_id: str,
+        window_m: float = Query(600, ge=100, le=5000,
+                                description="Sliding window used to average heading change"),
+    ) -> dict[str, Any]:
+        """Curviness sampled along the route, for the heat map.
+
+        Returns the coordinates alongside the values so the frontend can draw
+        coloured segments without re-deriving which point is which.
+        """
+        route = store.get(route_id)
+        points = route.all_latlon
+        profile = geo.curviness_profile(points, window_m=window_m)
+        if not profile:
+            return {"available": False, "reason": "Route is too short to measure.",
+                    "samples": []}
+
+        return {
+            "available": True,
+            "overall": round(geo.curviness_deg_per_km(points), 1),
+            "window_m": window_m,
+            "samples": [
+                {
+                    "lat": round(points[index][0], 6),
+                    "lon": round(points[index][1], 6),
+                    "distance_m": round(distance),
+                    "curviness": round(value, 1),
+                }
+                for index, distance, value in profile
+            ],
+        }
+
+    @app.get("/api/routes/{route_id}/export.gpx")
+    async def export_route(
+        route_id: str,
+        departure: str | None = Query(None),
+        speed_kmh: float = Query(0, ge=0, le=200),
+        tank_range_km: float = Query(0, ge=0, le=1000),
+        include_shaping: bool = Query(False),
+    ) -> Response:
+        """Write the route back out as GPX with the live findings folded in.
+
+        The enrichment layers are re-requested here, but they answer from cache
+        after the sidebar has already loaded them, so exporting costs nothing
+        extra in practice.
+        """
+        route = store.get(route_id)
+
+        weather_data = await weather_service.forecast_along_route(
+            route,
+            departure=_parse_departure(departure),
+            speed_kmh=speed_kmh or settings.default_speed_kmh,
+            settings=settings,
+            client=app.state.http,
+            cache=app.state.weather_cache,
+        )
+        hazard_data = await hazards_service.find_hazards(
+            route, settings, app.state.http, app.state.hazard_cache
+        )
+        poi_data = await pois_service.find_pois(
+            route, settings, app.state.http, app.state.poi_cache,
+            tank_range_km=tank_range_km or None,
+        )
+
+        payload = export.build_gpx(
+            route, weather_data, hazard_data, poi_data,
+            include_shaping_points=include_shaping,
+        )
+        filename = export.suggested_filename(route)
+        return Response(
+            content=payload,
+            media_type="application/gpx+xml",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/api/routes/{route_id}/elevation")
     async def route_elevation(route_id: str) -> dict[str, Any]:
         """Distance/elevation pairs for the profile chart.
@@ -190,6 +298,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         @app.get("/")
         async def index() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
+
+        @app.get("/sw.js")
+        async def service_worker() -> FileResponse:
+            """Serve the service worker from the site root.
+
+            Scope is derived from the worker's own path: one served from
+            /static/ can only ever control /static/, so it would never see the
+            page or its tile requests. Serving the same file from / is the
+            standard fix, and avoids having to set Service-Worker-Allowed.
+            """
+            return FileResponse(
+                STATIC_DIR / "sw.js",
+                media_type="application/javascript",
+                headers={"Cache-Control": "no-cache"},
+            )
 
     @app.exception_handler(RouteParseError)
     async def parse_error_handler(_request, exc: RouteParseError) -> JSONResponse:

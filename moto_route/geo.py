@@ -88,17 +88,59 @@ def _local_xy(point: LatLon, origin: LatLon) -> tuple[float, float]:
     return x, y
 
 
-def point_to_segment_m(p: LatLon, a: LatLon, b: LatLon) -> float:
-    """Shortest distance from point ``p`` to the segment ``a``-``b``, in metres."""
+def project_on_segment(p: LatLon, a: LatLon, b: LatLon) -> tuple[float, float]:
+    """Project ``p`` onto segment ``a``-``b``.
+
+    Returns ``(distance_m, t)`` where ``t`` is the position of the closest point
+    along the segment, clamped to ``[0, 1]`` — 0 at ``a``, 1 at ``b``. Callers
+    that need only the distance use :func:`point_to_segment_m`; ``t`` is what
+    turns "this hazard is 20 m off the road" into "at km 143.6".
+    """
     px, py = _local_xy(p, a)
     bx, by = _local_xy(b, a)
     seg_len_sq = bx * bx + by * by
     if seg_len_sq == 0.0:
-        return math.hypot(px, py)
-    # Projection factor of p onto the segment, clamped to the segment itself.
+        return math.hypot(px, py), 0.0
     t = max(0.0, min(1.0, (px * bx + py * by) / seg_len_sq))
     dx, dy = px - t * bx, py - t * by
-    return math.hypot(dx, dy)
+    return math.hypot(dx, dy), t
+
+
+def point_to_segment_m(p: LatLon, a: LatLon, b: LatLon) -> float:
+    """Shortest distance from point ``p`` to the segment ``a``-``b``, in metres."""
+    return project_on_segment(p, a, b)[0]
+
+
+def project_onto_polyline(
+    point: LatLon,
+    line: Sequence[LatLon],
+    cumulative: Sequence[float] | None = None,
+) -> tuple[float, float]:
+    """Locate a point relative to a route.
+
+    Returns ``(distance_off_line_m, distance_along_line_m)``. The along-distance
+    interpolates *within* the winning segment rather than snapping to its nearer
+    end, which matters on the long straight segments a simplified route is made
+    of — snapping there can be off by hundreds of metres.
+
+    Pass ``cumulative`` (from :func:`cumulative_distances`) when projecting many
+    points onto the same line, so it is computed once rather than per point.
+    """
+    if not line:
+        return float("inf"), 0.0
+    if len(line) == 1:
+        return haversine_m(point, line[0]), 0.0
+
+    if cumulative is None:
+        cumulative = cumulative_distances(line)
+
+    best_off, best_along = float("inf"), 0.0
+    for i, (a, b) in enumerate(zip(line, line[1:])):
+        off, t = project_on_segment(point, a, b)
+        if off < best_off:
+            best_off = off
+            best_along = cumulative[i] + t * (cumulative[i + 1] - cumulative[i])
+    return best_off, best_along
 
 
 def distance_to_polyline_m(p: LatLon, line: Sequence[LatLon]) -> float:
@@ -279,3 +321,65 @@ def curviness_deg_per_km(points: Sequence[LatLon], min_segment_m: float = 40.0) 
     if length_km <= 0:
         return 0.0
     return total_turn / length_km
+
+
+def curviness_profile(
+    points: Sequence[LatLon],
+    window_m: float = 600.0,
+    min_segment_m: float = 40.0,
+) -> list[tuple[int, float, float]]:
+    """Curviness sampled *along* a route, for colouring it by how twisty it is.
+
+    :func:`curviness_deg_per_km` reduces a whole route to one number, which is
+    the wrong tool for a heat map: a ride that is motorway for 100 km and
+    hairpins for 20 averages out to "mildly interesting" and hides both halves.
+    This walks a sliding window along the line instead.
+
+    Returns ``(index, distance_from_start_m, deg_per_km)`` per anchor, where
+    ``index`` points back into ``points``. Anchors are spaced at least
+    ``min_segment_m`` apart for the same reason as in
+    :func:`curviness_deg_per_km`: heading change between two points 3 m apart is
+    GPS noise, not a corner.
+    """
+    if len(points) < 3:
+        return []
+
+    # Anchors: thin the line so heading changes mean something.
+    anchor_idx = [0]
+    for i in range(1, len(points)):
+        if haversine_m(points[anchor_idx[-1]], points[i]) >= min_segment_m:
+            anchor_idx.append(i)
+    if len(anchor_idx) < 3:
+        return []
+
+    anchors = [points[i] for i in anchor_idx]
+    anchor_dist = cumulative_distances(anchors)
+
+    # Heading change at each interior anchor.
+    turns = [0.0] * len(anchors)
+    for j in range(1, len(anchors) - 1):
+        delta = abs(bearing_deg(anchors[j], anchors[j + 1]) - bearing_deg(anchors[j - 1], anchors[j]))
+        turns[j] = min(delta, 360.0 - delta)
+
+    # Sliding window sum, expanded symmetrically around each anchor. Two moving
+    # pointers keep this linear rather than re-scanning the window each time.
+    half = window_m / 2.0
+    profile: list[tuple[int, float, float]] = []
+    lo = hi = 0
+    running = 0.0
+
+    for j, centre in enumerate(anchor_dist):
+        while hi < len(anchors) and anchor_dist[hi] <= centre + half:
+            running += turns[hi]
+            hi += 1
+        while anchor_dist[lo] < centre - half:
+            running -= turns[lo]
+            lo += 1
+
+        span_km = (anchor_dist[hi - 1] - anchor_dist[lo]) / 1000.0
+        # A window shorter than half the target means we are at one end of the
+        # route; reporting deg/km off a 50 m span would produce wild numbers.
+        value = running / span_km if span_km >= (window_m / 2000.0) else 0.0
+        profile.append((anchor_idx[j], anchor_dist[j], value))
+
+    return profile

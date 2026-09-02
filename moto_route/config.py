@@ -37,6 +37,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_list(name: str, default: tuple[str, ...] = ()) -> list[str]:
+    """Comma-separated environment value, e.g. MOTO_AUTOBAHN_ROADS=A8,A81."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return list(default)
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -79,6 +87,46 @@ class Settings:
     default_speed_kmh: float = field(default_factory=lambda: _env_float("MOTO_SPEED_KMH", 65.0))
     weather_interval_m: float = field(default_factory=lambda: _env_float("MOTO_WEATHER_INTERVAL_M", 25_000.0))
     max_weather_samples: int = field(default_factory=lambda: _env_int("MOTO_MAX_WEATHER_SAMPLES", 24))
+
+    # --- points of interest --------------------------------------------------
+    #: Fuel is worth a detour, so it gets a wider corridor than a cafe you would
+    #: only stop at if it were on the way.
+    fuel_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_FUEL_CORRIDOR_M", 1000.0))
+    cafe_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_CAFE_CORRIDOR_M", 300.0))
+    viewpoint_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_VIEWPOINT_CORRIDOR_M", 500.0))
+    max_pois: int = field(default_factory=lambda: _env_int("MOTO_MAX_POIS", 300))
+
+    #: Usable tank range in km. Bikes carry far less fuel than cars, which is
+    #: why this app plans around it and a car navigation app does not.
+    tank_range_km: float = field(default_factory=lambda: _env_float("MOTO_TANK_RANGE_KM", 250.0))
+    #: Fraction of the tank held back as reserve, so the plan never has you
+    #: arriving at a pump on fumes.
+    fuel_reserve_fraction: float = field(default_factory=lambda: _env_float("MOTO_FUEL_RESERVE", 0.15))
+
+    # --- live incident feeds -------------------------------------------------
+    #: GeoJSON incident feeds to merge in. Bring your own national or regional
+    #: authority URL; see services/incidents.py for the shape expected.
+    incident_feeds: list[str] = field(default_factory=lambda: _env_list("MOTO_INCIDENT_FEEDS"))
+    #: Germany's Autobahn GmbH open API — keyless, so it is on by default.
+    autobahn_enabled: bool = field(default_factory=lambda: _env_bool("MOTO_AUTOBAHN", True))
+    autobahn_url: str = field(
+        default_factory=lambda: _env_str("MOTO_AUTOBAHN_URL", "https://verkehr.autobahn.de/o/autobahn")
+    )
+    #: Pin the motorways to query. Empty means "work it out from the route".
+    autobahn_roads: list[str] = field(default_factory=lambda: _env_list("MOTO_AUTOBAHN_ROADS"))
+    #: Each road costs three requests, so cap the fan-out at a free service.
+    max_autobahn_roads: int = field(default_factory=lambda: _env_int("MOTO_MAX_AUTOBAHN_ROADS", 8))
+    incident_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_INCIDENT_CORRIDOR_M", 500.0))
+    max_incidents: int = field(default_factory=lambda: _env_int("MOTO_MAX_INCIDENTS", 150))
+    incident_ttl_s: int = field(default_factory=lambda: _env_int("MOTO_INCIDENT_TTL", 600))  # 10 min
+
+    # --- offline tiles -------------------------------------------------------
+    #: OpenStreetMap's tile usage policy forbids bulk downloading and names 250
+    #: tiles as the limit for an area. Staying under it by default keeps this a
+    #: good citizen; raise it only when pointing at your own tile server.
+    max_cached_tiles: int = field(default_factory=lambda: _env_int("MOTO_MAX_CACHED_TILES", 250))
+    #: Milliseconds between prefetch requests, so caching never bursts.
+    tile_prefetch_delay_ms: int = field(default_factory=lambda: _env_int("MOTO_TILE_DELAY_MS", 120))
 
     # --- hazards -------------------------------------------------------------
     #: How far from the route a closure may be and still count as "on my way".
