@@ -36,27 +36,24 @@ five rides. Reloading offline restores the ride with a banner saying what is
 live and what is saved; a forgotten server route id (the in-memory store dies
 with the process) is recovered by silently re-uploading the kept file.
 
-### Remaining: `DEPLOY.md` plus a systemd unit
+### Done: deployment
 
-So it survives a reboot on the owner's 24/7 Debian box. The path was already
-worked out:
+Shipped. `DEPLOY.md` is the guide; `deploy/` holds a hardened systemd unit, an
+idempotent `install.sh` that installs from the local checkout (so a private repo
+needs no credentials on the server), and a commented env template.
 
-- Bind uvicorn to `127.0.0.1` only; let Tailscale do the exposing.
-- `tailscale serve --bg 8000` gives `https://<host>.<tailnet>.ts.net` with a
-  real certificate. Needs MagicDNS + HTTPS enabled in the Tailscale admin
-  console.
-- Also document a Caddy + port-forward + DDNS variant.
+The service binds to `127.0.0.1` only and runs as an unprivileged `motoroute`
+user under `ProtectSystem=strict`, an empty capability set and a syscall filter.
+Tailscale is the recommended way in: it gives a real certificate (so the tile
+service worker registers) and keeps an app with no authentication off the public
+internet.
 
-**Why HTTPS is non-negotiable:** service workers only register in a secure
-context, so over plain `http://<ip>:8000` the offline *tile* cache silently does
-nothing. (The saved ride uses IndexedDB and is unaffected.) Tailscale also
-solves the app's total lack of authentication by keeping it off the public
-internet — worth saying out loud in `DEPLOY.md`, because an exposed instance is
-an open relay that will get the owner's IP banned from the free
-Overpass/Open-Meteo/OSRM services.
+### Nothing agreed for next time
 
-Also note: the frontend uses absolute `/api` and `/static` paths, so it must be
-served at the **root of a hostname**, not a subpath.
+Open ideas, in rough order of value: a `LICENSE` file; verifying the Autobahn
+provider against the live API; more incident providers; a `MOTO_TILE_URL`
+setting (the tile server is currently hard-coded in `mapview.js`, and the docs
+had to be corrected to say so); multi-day tours; rider-tuned rideability weights.
 
 ---
 
@@ -95,6 +92,10 @@ python tools/browser_test.py --url http://127.0.0.1:8961/
 
 **Browser verification is not optional here.** Every bug in the list below was
 invisible to `pytest` and only showed up in a live page.
+
+For the deployment side, `systemd-analyze verify deploy/moto-route.service`
+checks the unit, and `tests/test_docs.py` fails if any document names a `MOTO_*`
+setting that `config.py` does not define — it caught an invented one.
 
 ---
 
@@ -180,6 +181,11 @@ Every one of these was a real bug found during verification. Do not reintroduce.
   loses updates, because each reads before the others write. The symptom was
   three of seven layers persisting. `store.js` issues the `put` from inside the
   `get` callback so the pair is atomic.
+- **`StartLimitIntervalSec` and `StartLimitBurst` live in `[Unit]`.** systemd
+  silently ignores them under `[Service]`, so a misplaced pair looks fine and
+  does nothing. `systemd-analyze verify` catches it; run it after any unit edit.
+- **Parsing an ini file by splitting on `"[Section]"` is wrong** when the file's
+  own comments mention section names. `tests/test_docs.py` walks lines instead.
 - **A hidden panel still holds its old DOM.** Hiding the saved-rides list
   without clearing it left rows for rides already deleted.
 - **`xml.etree` expands entity declarations.** Route files never need a DTD, so

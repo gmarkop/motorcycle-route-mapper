@@ -1,0 +1,74 @@
+# systemd unit for the motorcycle route mapper.
+#
+# Install with deploy/install.sh, or by hand:
+#   sudo cp deploy/moto-route.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now moto-route
+#
+# The service binds to loopback only. Nothing about this app authenticates its
+# callers, so it must not be reachable from the network directly — put Tailscale
+# or a reverse proxy in front of it. See DEPLOY.md.
+
+[Unit]
+Description=Motorcycle route mapper
+Documentation=https://github.com/gmarkop/motorcycle-route-mapper
+After=network-online.target
+Wants=network-online.target
+
+# Rate-limit restarts so a crash loop cannot hammer the free APIs. These two
+# belong in [Unit]: systemd silently ignores them under [Service], which means
+# a misplaced pair looks fine and simply does nothing.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=motoroute
+Group=motoroute
+WorkingDirectory=/opt/moto-route
+
+# Optional overrides: MOTO_* settings, one KEY=value per line. The leading "-"
+# means the service still starts when the file does not exist.
+EnvironmentFile=-/etc/moto-route.env
+
+# systemd creates and owns /var/lib/moto-route for us, which is the one place
+# the app writes: its forecast and closure cache.
+StateDirectory=moto-route
+Environment=MOTO_CACHE_DIR=/var/lib/moto-route
+
+ExecStart=/opt/moto-route/.venv/bin/python -m uvicorn moto_route.api:app \
+    --host 127.0.0.1 --port 8000
+
+Restart=on-failure
+RestartSec=5s
+
+# --- hardening -------------------------------------------------------------
+# This is a personal tool that parses files from the internet and talks to
+# third-party services, so it gets no more of the system than it needs.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+# It only ever speaks TCP; no raw sockets, no netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

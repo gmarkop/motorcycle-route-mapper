@@ -313,10 +313,18 @@ All optional, all environment variables.
 | `MOTO_AUTOBAHN` | `true` | Enable the German Autobahn provider |
 | `MOTO_AUTOBAHN_ROADS` | — | Pin the motorways (e.g. `A8,A81`); empty auto-detects |
 | `MOTO_INCIDENT_CORRIDOR_M` | `500` | How far off-route an incident still counts |
+| `MOTO_AUTOBAHN_URL` | Autobahn GmbH | Override the German incident endpoint |
+| `MOTO_MAX_AUTOBAHN_ROADS` | `8` | Cap on motorways queried per route |
+| `MOTO_MAX_INCIDENTS` | `150` | Cap on incidents returned |
+| `MOTO_INCIDENT_TTL` | `600` | Incident cache lifetime, seconds |
+| `MOTO_MAX_HAZARDS` | `200` | Cap on OSM closures returned |
+| `MOTO_MAX_POIS` | `300` | Cap on fuel/cafe/viewpoint results |
 
-Weather and hazard TTLs (`MOTO_WEATHER_TTL`, `MOTO_HAZARD_TTL`,
-`MOTO_ROUTING_TTL`) and upload limits (`MOTO_MAX_UPLOAD`) are configurable too;
-see `config.py`.
+Cache lifetimes (`MOTO_WEATHER_TTL`, `MOTO_HAZARD_TTL`, `MOTO_ROUTING_TTL`) and
+the upload limit (`MOTO_MAX_UPLOAD`) round out the set; `config.py` is the
+authority.
+
+To run it as a service on a home server, see **[DEPLOY.md](DEPLOY.md)**.
 
 ---
 
