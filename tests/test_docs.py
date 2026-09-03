@@ -45,8 +45,14 @@ def section_keys(unit_text: str) -> dict[str, set[str]]:
 
 
 def real_settings() -> set[str]:
+    """Every MOTO_* name config.py actually reads.
+
+    The whitespace allowance matters: a setting whose call wraps onto the next
+    line is still a real setting, and a regex that demanded the name hug the
+    open bracket reported a perfectly good one as invented.
+    """
     source = (REPO / "moto_route" / "config.py").read_text()
-    return set(re.findall(r'_env_\w+\("(MOTO_[A-Z_]+)"', source))
+    return set(re.findall(r'_env_\w+\(\s*"(MOTO_[A-Z_]+)"', source))
 
 
 @pytest.mark.parametrize("document", DOCUMENTS)
