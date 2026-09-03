@@ -251,3 +251,86 @@ def test_invalid_xml_reports_a_readable_error():
 def test_wrong_root_element_is_reported():
     with pytest.raises(RouteParseError, match="Expected a <gpx> root"):
         parse_route_bytes(b"<?xml version='1.0'?><gpx-ish/>", "weird.gpx")
+
+
+# ------------------------------------- route files with no naming convention
+
+def test_a_converter_route_with_no_named_points_stays_visible():
+    """Google Maps to GPX tools name nothing.
+
+    Reading "unnamed" as "shaping point" there marked every point on the route
+    as scenery, and the frontend draws shaping points as 3px grey dots — so the
+    rider's waypoints simply vanished.
+    """
+    gpx = b"""<?xml version="1.0"?>
+    <gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="online converter">
+      <rte><name>Athens to Delphi</name>
+        <rtept lat="37.9838" lon="23.7275"/>
+        <rtept lat="38.1800" lon="23.1000"/>
+        <rtept lat="38.4824" lon="22.5010"/>
+      </rte>
+    </gpx>"""
+    route = parse_route_bytes(gpx, "converted.gpx")
+
+    assert [w.kind for w in route.waypoints] == ["via", "via", "via"]
+
+
+def test_a_long_unnamed_route_is_read_as_geometry_not_stops():
+    """The other half of the same judgement.
+
+    A converter that writes the whole driving polyline out as route points
+    produces hundreds of them. Calling those via points buries the map under
+    hundreds of markers, which is no more useful than hiding them.
+    """
+    points = "".join(
+        f'<rtept lat="{38.0 + i * 0.01:.4f}" lon="{23.0 + i * 0.005:.4f}"/>'
+        for i in range(120)
+    )
+    gpx = ('<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1" '
+           f'version="1.1"><rte>{points}</rte></gpx>').encode()
+
+    route = parse_route_bytes(gpx, "polyline.gpx")
+
+    assert {w.kind for w in route.waypoints} == {"shaping"}
+
+
+def test_the_via_point_threshold_is_where_it_claims_to_be():
+    from moto_route.parsers.gpx import MAX_IMPLICIT_VIA_POINTS
+
+    def route_of(count: int):
+        points = "".join(
+            f'<rtept lat="{38.0 + i * 0.01:.4f}" lon="23.0"/>' for i in range(count)
+        )
+        gpx = ('<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1" '
+               f'version="1.1"><rte>{points}</rte></gpx>').encode()
+        return parse_route_bytes(gpx, "x.gpx")
+
+    at_limit = route_of(MAX_IMPLICIT_VIA_POINTS)
+    over_limit = route_of(MAX_IMPLICIT_VIA_POINTS + 1)
+
+    assert {w.kind for w in at_limit.waypoints} == {"via"}
+    assert {w.kind for w in over_limit.waypoints} == {"shaping"}
+
+
+def test_a_file_that_does_distinguish_is_still_respected(read_fixture):
+    """Garmin names its stops and leaves shaping points bare; keep reading that."""
+    route = parse_route_bytes(read_fixture("garmin_route.gpx"), "garmin_route.gpx")
+    kinds = [w.kind for w in route.waypoints]
+
+    assert "shaping" in kinds, "an unnamed point beside named ones is still shaping"
+    assert "via" in kinds
+
+
+def test_one_named_point_is_enough_to_imply_the_convention():
+    """If the author named anything, the unnamed ones are shaping points."""
+    gpx = b"""<?xml version="1.0"?>
+    <gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1">
+      <rte>
+        <rtept lat="48.0" lon="11.0"><name>Coffee</name></rtept>
+        <rtept lat="48.1" lon="11.1"/>
+        <rtept lat="48.2" lon="11.2"/>
+      </rte>
+    </gpx>"""
+    route = parse_route_bytes(gpx, "mixed.gpx")
+
+    assert [w.kind for w in route.waypoints] == ["via", "shaping", "shaping"]

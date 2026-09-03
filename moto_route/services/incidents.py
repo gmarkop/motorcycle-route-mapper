@@ -37,7 +37,7 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
-from .overpass import OverpassError, run_query
+from .overpass import OverpassError, query_header, run_query
 
 log = logging.getLogger(__name__)
 
@@ -265,9 +265,9 @@ class AutobahnProvider:
             return []
         joined = ",".join(f"{lat:.4f},{lon:.4f}" for lat, lon in coords)
         query = (
-            "[out:json][timeout:60];"
-            f'way(around:200,{joined})["highway"="motorway"]["ref"];'
-            "out tags 200;"
+            query_header(self.settings)
+            + f'way(around:200,{joined})["highway"="motorway"]["ref"];'
+            + "out tags 200;"
         )
 
         cached = self.cache.get("autobahn-roads|" + query)

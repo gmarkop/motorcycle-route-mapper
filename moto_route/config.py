@@ -73,6 +73,11 @@ class Settings:
     #: so it queues by default rather than racing and losing one to a 429.
     #: Raise it only for an Overpass you run yourself.
     overpass_concurrency: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_CONCURRENCY", 1))
+    #: How long Overpass may spend on one query. This is declared inside the
+    #: query AND used as the HTTP timeout, because the two must agree: telling
+    #: Overpass it may take 90 seconds while hanging up after 20 guarantees a
+    #: timeout on any query that is actually slow.
+    overpass_timeout_s: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_TIMEOUT", 90))
 
     # --- caching -------------------------------------------------------------
     cache_dir: Path = field(

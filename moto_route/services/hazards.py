@@ -29,7 +29,7 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
-from .overpass import OverpassError, run_query
+from .overpass import OverpassError, query_header, run_query
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,8 @@ class Hazard:
         return data
 
 
-def build_query(coords: Sequence[geo.LatLon], radius_m: float, limit: int) -> str:
+def build_query(coords: Sequence[geo.LatLon], radius_m: float, limit: int,
+                header: str = "[out:json][timeout:90];") -> str:
     """Compose the Overpass QL query for a corridor around the route.
 
     ``around:<radius>,lat,lon,lat,lon,...`` treats the coordinate list as a
@@ -71,7 +72,7 @@ def build_query(coords: Sequence[geo.LatLon], radius_m: float, limit: int) -> st
     """
     joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
     around = f"around:{int(radius_m)},{joined}"
-    return f"""[out:json][timeout:60];
+    return f"""{header}
 (
   way({around})["highway"="construction"];
   way({around})["highway"]["construction"];
@@ -99,7 +100,8 @@ async def find_hazards(
         return {"available": False, "reason": "Offline mode is enabled.", "hazards": []}
 
     query_coords = _query_coordinates(route_points)
-    query = build_query(query_coords, settings.hazard_corridor_m, settings.max_hazards)
+    query = build_query(query_coords, settings.hazard_corridor_m, settings.max_hazards,
+                        header=query_header(settings))
 
     cached = cache.get(query)
     if cached is not None:

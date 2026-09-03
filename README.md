@@ -257,6 +257,13 @@ code 0 means "clear sky" — the best weather there is. Written as
 `CODES.get(code or -1)`, it silently becomes "Unknown". There is a regression
 test named after this exact mistake.
 
+**A timeout is two numbers that must agree** (`services/overpass.py`). The query
+told Overpass it could take 90 seconds; the HTTP client hung up after 20. Every
+slow query therefore failed, and the failure looked like a network problem
+rather than a configuration one. Both now come from a single setting, and a test
+asserts the HTTP wait outlasts the declared budget — the kind of invariant worth
+pinning down, because nothing else will notice it drifting.
+
 **One door to a shared free service** (`services/overpass.py`). Three layers ask
 Overpass questions, and the browser fires all three at once — but the public
 instance grants about two slots per IP, so the third came back 429 and which one
@@ -324,6 +331,7 @@ All optional, all environment variables.
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
 | `MOTO_OVERPASS_CONCURRENCY` | `1` | Overpass queries in flight at once — the public instance allows about two per IP |
+| `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
 | `MOTO_TANK_RANGE_KM` | `250` | Usable tank range for fuel planning |
 | `MOTO_FUEL_RESERVE` | `0.15` | Fraction of the tank held back as reserve |
 | `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |

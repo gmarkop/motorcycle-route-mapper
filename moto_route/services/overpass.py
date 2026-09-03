@@ -36,6 +36,20 @@ RETRYABLE = frozenset({429, 502, 503, 504})
 RETRY_BASE_DELAY = 1.0
 
 
+#: Seconds allowed on top of the query's own budget, for connecting and for
+#: streaming back what can be a few megabytes of JSON.
+TRANSFER_MARGIN_S = 15.0
+
+
+def query_header(settings: Settings) -> str:
+    """The `[out:json][timeout:N];` prelude every query shares.
+
+    Kept here so the declared budget and the HTTP timeout cannot drift apart —
+    they were 90 and 20 once, which made every slow query fail client-side.
+    """
+    return f"[out:json][timeout:{int(settings.overpass_timeout_s)}];"
+
+
 class OverpassError(RuntimeError):
     """A failed Overpass query, with a message fit to show a rider."""
 
@@ -99,7 +113,19 @@ async def run_query(
                     settings.overpass_url,
                     data={"data": query},
                     headers={"User-Agent": settings.user_agent},
+                    # Overriding the shared client's timeout: an Overpass query
+                    # is allowed far longer than an ordinary API call, and must
+                    # outlast the budget the query itself declares.
+                    timeout=settings.overpass_timeout_s + TRANSFER_MARGIN_S,
                 )
+            except httpx.TimeoutException:
+                last = OverpassError(
+                    f"Overpass did not answer within "
+                    f"{int(settings.overpass_timeout_s + TRANSFER_MARGIN_S)}s. Long "
+                    "routes make expensive queries; a shorter route, or your own "
+                    "Overpass server, will work."
+                )
+                response = None
             except httpx.HTTPError as exc:
                 last = OverpassError(f"Could not reach Overpass ({type(exc).__name__}).")
                 response = None

@@ -26,7 +26,7 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
-from .overpass import OverpassError, run_query
+from .overpass import OverpassError, query_header, run_query
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def build_query(coords: Sequence[geo.LatLon], settings: Settings) -> str:
     def around(radius: float) -> str:
         return f"around:{int(radius)},{joined}"
 
-    return f"""[out:json][timeout:90];
+    return f"""{query_header(settings)}
 (
   nwr({around(settings.fuel_corridor_m)})["amenity"="fuel"];
   nwr({around(settings.cafe_corridor_m)})["amenity"="cafe"];
