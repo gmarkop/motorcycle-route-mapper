@@ -148,12 +148,20 @@ Worth knowing before you rely on any of it:
   after roughly a week without visiting a site. Adding the app to the iPad home
   screen exempts it, which matters if you cache a ride on Sunday and set off on
   Friday.
-- **The Autobahn provider is unverified.** The live endpoints were unreachable
-  from the environment this was built in, so the response mapping follows the
-  documented shape and is covered by tests against recorded fixtures — but it has
-  never seen the real service. It fails soft: a wrong guess about the schema
-  shows an empty layer, not a broken app. Confirm it returns real data before
-  trusting it.
+- **The Autobahn provider has never met the live API.** It was written against
+  the documented shape and is covered by tests using recorded fixtures, but the
+  environment it was built in has no outbound network. It fails soft — a wrong
+  guess about the schema shows an empty layer, not a broken app — and you can
+  settle the question in one command from a machine with a connection:
+
+  ```bash
+  python tools/verify_autobahn.py
+  ```
+
+  That checks the payload keys, the coordinate spelling, the description type
+  and the OpenStreetMap motorway detection, then runs the provider's own mapping
+  code over the live payloads and tells you whether it holds. Exit code 0 means
+  it does.
 - **Incident coverage is only what you configure.** An empty incidents layer
   means no feed covers that road, not that the road is clear.
 - **Leaflet is vendored locally**, so the interface and your route work with no

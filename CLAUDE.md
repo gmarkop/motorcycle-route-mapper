@@ -195,7 +195,22 @@ Every one of these was a real bug found during verification. Do not reintroduce.
 
 The **Autobahn incident provider** (`services/incidents.py`) was written against
 the documented shape of Germany's Autobahn GmbH API and is covered by tests
-using recorded fixtures, but the live endpoints were unreachable from the build
-environment. It has never seen real data. It fails soft, so a wrong guess about
-the schema shows an empty layer rather than breaking anything — but do not
-present it as working until someone has watched it return a real incident.
+using recorded fixtures, but the live endpoints are unreachable from this build
+environment (the egress proxy answers `connect_rejected`), so it has never seen
+real data.
+
+It fails soft, so a wrong guess about the schema shows an empty layer rather
+than breaking anything. **Do not present it as working** until someone has
+watched it return a real incident.
+
+`tools/verify_autobahn.py` settles it from any machine with a connection. It
+checks the payload key per service, the `long`-not-`lon` coordinate spelling,
+whether `description` is a list, and the OpenStreetMap motorway detection — then
+runs the provider's own `_item_to_incident` over the live payloads, so the check
+cannot drift from the implementation. It also sanity-checks that mapped
+coordinates land inside Germany, which is what would catch a silent latitude
+/longitude swap. Exit 0 means the provider matches the live API.
+
+The script honours `MOTO_AUTOBAHN_URL`, so it can be pointed at
+`tools/stub_apis.py` as a self-test; the Germany bounds check is skipped when
+the endpoint is not the public API.

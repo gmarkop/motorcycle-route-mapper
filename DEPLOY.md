@@ -245,6 +245,25 @@ create that directory and `chown` it to the service user.
 
 ---
 
+## Once it is running
+
+The box has a connection, which the machine this was built on did not. Two
+things are worth doing from there:
+
+```bash
+cd /opt/moto-route
+sudo -u motoroute .venv/bin/python tools/verify_autobahn.py
+```
+
+That checks the German incident provider against the live Autobahn API — the
+one part of the app that has never seen real data. Exit 0 means it works; any
+failure prints the field names it actually found, so the fix is obvious.
+
+If you use the incidents layer outside Germany, set `MOTO_INCIDENT_FEEDS` in
+`/etc/moto-route.env` to a GeoJSON feed from your own road authority.
+
+---
+
 ## About the unit file
 
 `deploy/moto-route.service` runs the app as an unprivileged user with most of
