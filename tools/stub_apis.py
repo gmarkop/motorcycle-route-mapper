@@ -101,6 +101,13 @@ async def overpass(request: Request):
     ]}
 
 
+@app.get("/o/autobahn")
+async def autobahn_roads():
+    """The road index. The provider does not use it, but tools/verify_autobahn.py
+    checks it, so the stub answers it too."""
+    return {"roads": ["A22"]}
+
+
 @app.get("/o/autobahn/{road}/services/{service}")
 async def autobahn(road: str, service: str):
     """Germany's Autobahn API. Note `long`, not `lon` — as the real one does."""
