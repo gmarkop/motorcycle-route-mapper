@@ -162,6 +162,12 @@ Worth knowing before you rely on any of it:
   and the OpenStreetMap motorway detection, then runs the provider's own mapping
   code over the live payloads and tells you whether it holds. Exit code 0 means
   it does.
+- **The public Overpass servers refuse connections when busy**, per query rather
+  than per client — so the heavy closure query can fail while the lighter
+  points-of-interest one beside it succeeds. Attempts rotate through
+  `MOTO_OVERPASS_FALLBACK_URLS`, and `python tools/check_services.py` sends the
+  app's real queries to every configured endpoint so you can see which one is
+  turning you away.
 - **Incident coverage is only what you configure.** An empty incidents layer
   means no feed covers that road, not that the road is clear. The German
   provider only runs for routes that actually enter Germany, and says so
@@ -332,6 +338,7 @@ All optional, all environment variables.
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
 | `MOTO_OVERPASS_CONCURRENCY` | `1` | Overpass queries in flight at once — the public instance allows about two per IP |
 | `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
+| `MOTO_OVERPASS_FALLBACK_URLS` | one mirror | Other Overpass instances to rotate through; empty disables |
 | `MOTO_TANK_RANGE_KM` | `250` | Usable tank range for fuel planning |
 | `MOTO_FUEL_RESERVE` | `0.15` | Fraction of the tank held back as reserve |
 | `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |

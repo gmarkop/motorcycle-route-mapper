@@ -38,11 +38,19 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_list(name: str, default: tuple[str, ...] = ()) -> list[str]:
-    """Comma-separated environment value, e.g. MOTO_AUTOBAHN_ROADS=A8,A81."""
-    raw = os.environ.get(name, "").strip()
-    if not raw:
+    """Comma-separated environment value, e.g. MOTO_AUTOBAHN_ROADS=A8,A81.
+
+    An unset variable falls back to the default; one set to an empty string
+    means an empty list. Collapsing the two would make a default impossible to
+    turn off, which matters for settings whose default is not empty.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
         return list(default)
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    stripped = raw.strip()
+    if not stripped:
+        return []
+    return [part.strip() for part in stripped.split(",") if part.strip()]
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -78,6 +86,13 @@ class Settings:
     #: Overpass it may take 90 seconds while hanging up after 20 guarantees a
     #: timeout on any query that is actually slow.
     overpass_timeout_s: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_TIMEOUT", 90))
+    #: Other public Overpass instances to fall back to. The main server drops
+    #: connections when it is busy, and a refused connection is precisely the
+    #: failure a second endpoint fixes. Comma-separated; set empty to disable.
+    overpass_fallback_urls: list[str] = field(default_factory=lambda: _env_list(
+        "MOTO_OVERPASS_FALLBACK_URLS",
+        ("https://overpass.kumi.systems/api/interpreter",),
+    ))
 
     # --- caching -------------------------------------------------------------
     cache_dir: Path = field(
@@ -142,6 +157,15 @@ class Settings:
     #: How far from the route a closure may be and still count as "on my way".
     hazard_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_HAZARD_CORRIDOR_M", 150.0))
     max_hazards: int = field(default_factory=lambda: _env_int("MOTO_MAX_HAZARDS", 200))
+
+    @property
+    def overpass_endpoints(self) -> list[str]:
+        """Every Overpass instance to try, primary first, without duplicates."""
+        endpoints = [self.overpass_url]
+        for url in self.overpass_fallback_urls:
+            if url and url not in endpoints:
+                endpoints.append(url)
+        return endpoints
 
     @property
     def user_agent(self) -> str:

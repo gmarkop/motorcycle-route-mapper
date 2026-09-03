@@ -100,17 +100,28 @@ async def run_query(
 ) -> dict[str, Any]:
     """POST an Overpass QL query and return the parsed JSON.
 
-    Raises :class:`OverpassError` with a readable message on failure.
+    Attempts rotate through the configured endpoints. A refused connection is
+    the one failure a second server reliably fixes — the main instance drops
+    connections when it is busy, and it does so per-query, so the heavy closure
+    query can fail while the lighter points-of-interest one alongside it
+    succeeds. Rotating also spreads load across mirrors when one is throttling.
+
+    Raises :class:`OverpassError` with a message describing what actually
+    happened, not the name of a Python class.
     """
+    endpoints = settings.overpass_endpoints
     limit = max(1, settings.overpass_concurrency)
     delay = RETRY_BASE_DELAY
+    failures: list[str] = []
     last: OverpassError | None = None
 
-    for attempt in range(1, attempts + 1):
+    for attempt in range(attempts):
+        endpoint = endpoints[attempt % len(endpoints)]
+
         async with _semaphore(limit):
             try:
                 response = await client.post(
-                    settings.overpass_url,
+                    endpoint,
                     data={"data": query},
                     headers={"User-Agent": settings.user_agent},
                     # Overriding the shared client's timeout: an Overpass query
@@ -125,9 +136,17 @@ async def run_query(
                     "routes make expensive queries; a shorter route, or your own "
                     "Overpass server, will work."
                 )
+                failures.append(f"{_host(endpoint)}: timed out")
                 response = None
             except httpx.HTTPError as exc:
-                last = OverpassError(f"Could not reach Overpass ({type(exc).__name__}).")
+                # Name the host and the reason. "ConnectError" alone tells a
+                # rider nothing about whether to retry, wait, or reconfigure.
+                detail = str(exc).strip() or type(exc).__name__
+                last = OverpassError(
+                    f"Could not connect to {_host(endpoint)} — {detail}. "
+                    "The public Overpass servers refuse connections when busy."
+                )
+                failures.append(f"{_host(endpoint)}: {type(exc).__name__}")
                 response = None
 
             if response is not None:
@@ -136,22 +155,34 @@ async def run_query(
                         return response.json()
                     except ValueError:
                         raise OverpassError(
-                            "Overpass returned something that is not JSON."
+                            f"{_host(endpoint)} returned something that is not JSON."
                         ) from None
 
-                last = OverpassError(describe(response.status_code), response.status_code)
+                last = OverpassError(
+                    f"{_host(endpoint)}: {describe(response.status_code)}",
+                    response.status_code,
+                )
+                failures.append(f"{_host(endpoint)}: HTTP {response.status_code}")
                 if response.status_code not in RETRYABLE:
                     raise last
                 # Overpass tells us how long to wait when it throttles; believe it.
                 delay = _retry_after(response) or delay
 
-        if attempt < attempts:
-            log.info("Overpass attempt %d failed (%s); retrying in %.1fs",
-                     attempt, last, delay)
+        if attempt < attempts - 1:
+            log.info("Overpass attempt %d via %s failed (%s); retrying in %.1fs",
+                     attempt + 1, _host(endpoint), last, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 8.0)
 
+    if last is not None and len(set(failures)) > 1:
+        # Several endpoints failed differently; list them rather than reporting
+        # only whichever happened to be last.
+        raise OverpassError(f"{last} (tried {', '.join(failures)})", last.status)
     raise last or OverpassError("Overpass failed for an unknown reason.")
+
+
+def _host(url: str) -> str:
+    return url.split("://", 1)[-1].split("/", 1)[0] or url
 
 
 def _retry_after(response: httpx.Response) -> float | None:
