@@ -158,13 +158,19 @@ def test_statuses_are_described_in_plain_english(status, expected):
     assert str(status) in overpass.describe(status)
 
 
-async def test_an_unreachable_server_says_so(settings):
+async def test_an_unreachable_server_names_the_host_and_the_reason(settings):
+    """"ConnectError" is a class name. It does not say which server, or why."""
     def handler(request):
-        raise httpx.ConnectError("no route to host")
+        raise httpx.ConnectError("connection refused")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(overpass.OverpassError, match="Could not reach Overpass"):
+        with pytest.raises(overpass.OverpassError) as caught:
             await overpass.run_query("q", settings, client, attempts=1)
+
+    message = str(caught.value)
+    assert "overpass-api.de" in message
+    assert "connection refused" in message
+    assert "refuse connections when busy" in message
 
 
 async def test_non_json_is_rejected_clearly(settings):
@@ -222,3 +228,97 @@ async def test_a_timeout_explains_itself(settings):
     message = str(caught.value)
     assert "did not answer" in message
     assert "shorter route" in message
+
+
+
+# ------------------------------------------------------------------- failover
+
+async def test_a_refused_connection_falls_over_to_the_next_endpoint():
+    """The failure a mirror actually fixes.
+
+    The main instance drops connections per-query when it is busy, which is how
+    the heavy closure query failed while the lighter POI query beside it
+    succeeded, both against the same server.
+    """
+    settings = Settings(
+        overpass_url="https://primary.example/api",
+        overpass_fallback_urls=["https://mirror.example/api"],
+    )
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(request.url.host)
+        if request.url.host == "primary.example":
+            raise httpx.ConnectError("connection refused")
+        return httpx.Response(200, json={"elements": [{"type": "node"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await overpass.run_query("q", settings, client)
+
+    assert tried == ["primary.example", "mirror.example"]
+    assert result["elements"]
+
+
+async def test_attempts_rotate_through_the_endpoints():
+    settings = Settings(
+        overpass_url="https://a.example/api",
+        overpass_fallback_urls=["https://b.example/api"],
+    )
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(request.url.host)
+        raise httpx.ConnectError("refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError):
+            await overpass.run_query("q", settings, client, attempts=3)
+
+    assert tried == ["a.example", "b.example", "a.example"]
+
+
+async def test_the_failure_lists_every_endpoint_tried():
+    settings = Settings(
+        overpass_url="https://a.example/api",
+        overpass_fallback_urls=["https://b.example/api"],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "a.example":
+            raise httpx.ConnectError("refused")
+        return httpx.Response(429, text="slow down")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError) as caught:
+            await overpass.run_query("q", settings, client, attempts=2)
+
+    message = str(caught.value)
+    assert "a.example" in message and "b.example" in message
+
+
+async def test_fallbacks_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("MOTO_OVERPASS_FALLBACK_URLS", "")
+    settings = Settings(overpass_url="https://only.example/api")
+    assert settings.overpass_endpoints == ["https://only.example/api"]
+
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(request.url.host)
+        raise httpx.ConnectError("refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError):
+            await overpass.run_query("q", settings, client, attempts=3)
+
+    assert set(tried) == {"only.example"}
+
+
+def test_an_unset_list_still_gets_its_default(monkeypatch):
+    """Empty means empty; unset means the default. Collapsing the two would
+    make a non-empty default impossible to switch off."""
+    monkeypatch.delenv("MOTO_OVERPASS_FALLBACK_URLS", raising=False)
+    assert Settings().overpass_fallback_urls, "an unset variable keeps the default"
+
+    monkeypatch.setenv("MOTO_OVERPASS_FALLBACK_URLS", "")
+    assert Settings().overpass_fallback_urls == []

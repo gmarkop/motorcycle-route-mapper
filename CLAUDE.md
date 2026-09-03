@@ -194,6 +194,13 @@ Every one of these was a real bug found during verification. Do not reintroduce.
   at most `MAX_IMPLICIT_VIA_POINTS` unnamed points are the rider's stops, more
   than that is an exported driving polyline. Both mistakes are equally bad, in
   opposite directions.
+- **The public Overpass servers refuse connections per query, not per client.**
+  The heavy closure query (8 filters, `out geom`) gets turned away while the
+  lighter POI query to the same host succeeds — which looks impossible until you
+  know it. Attempts rotate through `MOTO_OVERPASS_FALLBACK_URLS`.
+- **An unset environment variable and one set to empty are different.**
+  `_env_list` used to collapse them, which made a non-empty default impossible
+  to switch off.
 - **Never put a status code in an exception name and call it a message.**
   `f"unavailable ({type(exc).__name__})"` is undiagnosable; the status is the
   one fact that matters.

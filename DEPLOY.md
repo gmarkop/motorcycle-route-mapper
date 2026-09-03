@@ -255,7 +255,14 @@ cd /opt/moto-route
 sudo -u motoroute .venv/bin/python tools/verify_autobahn.py
 ```
 
-That checks the German incident provider against the live Autobahn API — the
+```bash
+sudo -u motoroute .venv/bin/python tools/check_services.py
+```
+
+The first checks every external service the app needs, sending its real queries
+— including the heavy closure query, which the public Overpass servers refuse
+more readily than the lighter ones. The second checks the German incident
+provider against the live Autobahn API — the
 one part of the app that has never seen real data. Exit 0 means it works; any
 failure prints the field names it actually found, so the fix is obvious.
 
