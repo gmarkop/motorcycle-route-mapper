@@ -5,7 +5,7 @@ import pytest
 
 from moto_route.config import Settings
 from moto_route.models import GeoPoint, Route
-from moto_route.services import pois
+from moto_route.services import overpass, pois
 from moto_route.services.cache import TTLCache
 
 
@@ -234,7 +234,10 @@ async def test_offline_mode_makes_no_request(route, settings, cache):
     assert result["available"] is False
 
 
-async def test_an_overpass_failure_degrades_gracefully(route, settings, cache):
+async def test_rate_limiting_is_reported_in_plain_english(monkeypatch, route, settings, cache):
+    """429 is the failure a rider will actually hit, so it must explain itself."""
+    monkeypatch.setattr(overpass, "RETRY_BASE_DELAY", 0)
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, text="too many requests")
 
@@ -243,3 +246,5 @@ async def test_an_overpass_failure_degrades_gracefully(route, settings, cache):
 
     assert result["available"] is False
     assert result["pois"] == []
+    assert "429" in result["reason"]
+    assert "rate-limiting" in result["reason"]

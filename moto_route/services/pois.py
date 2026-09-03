@@ -26,6 +26,7 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
+from .overpass import OverpassError, run_query
 
 log = logging.getLogger(__name__)
 
@@ -113,22 +114,12 @@ async def find_pois(
     cached = cache.get(query)
     if cached is None:
         try:
-            response = await client.post(
-                settings.overpass_url,
-                data={"data": query},
-                headers={"User-Agent": settings.user_agent},
-            )
-            response.raise_for_status()
-            cached = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            log.warning("Overpass POI request failed: %s", exc)
+            cached = await run_query(query, settings, client)
+        except OverpassError as exc:
+            log.warning("Overpass POI query failed: %s", exc)
             stale = cache.get_stale(query)
             if stale is None:
-                return {
-                    "available": False,
-                    "reason": f"Points of interest unavailable ({type(exc).__name__}).",
-                    "pois": [],
-                }
+                return {"available": False, "reason": str(exc), "pois": []}
             cached = stale
         else:
             cache.set(query, cached, settings.hazard_ttl_s)

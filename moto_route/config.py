@@ -68,6 +68,11 @@ class Settings:
     #: work; live layers report themselves as unavailable instead of hanging.
     offline: bool = field(default_factory=lambda: _env_bool("MOTO_OFFLINE", False))
     request_timeout_s: float = field(default_factory=lambda: _env_float("MOTO_TIMEOUT", 20.0))
+    #: How many Overpass queries may be in flight at once. The public instance
+    #: grants about two slots per IP and this app has three things to ask it,
+    #: so it queues by default rather than racing and losing one to a 429.
+    #: Raise it only for an Overpass you run yourself.
+    overpass_concurrency: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_CONCURRENCY", 1))
 
     # --- caching -------------------------------------------------------------
     cache_dir: Path = field(

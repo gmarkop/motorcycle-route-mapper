@@ -308,3 +308,95 @@ async def test_offline_mode_makes_no_request(route, settings, cache):
         result = await incidents.find_incidents(route, settings, client, cache)
 
     assert result["available"] is False
+
+
+# ------------------------------------------------- geographic coverage
+
+def greek_route() -> Route:
+    """Athens towards Thessaloniki. Greek motorways are numbered A1, A2, ...
+    exactly as German ones are, which is the trap."""
+    return Route(name="Greece", lines=[[GeoPoint(lat=37.98 + i * 0.01, lon=23.72 - i * 0.002)
+                                        for i in range(200)]])
+
+
+def german_route() -> Route:
+    return Route(name="Bavaria", lines=[[GeoPoint(lat=48.13 + i * 0.005, lon=11.58 + i * 0.005)
+                                         for i in range(100)]])
+
+
+def test_autobahn_covers_germany_but_not_greece(settings, cache):
+    provider = incidents.AutobahnProvider(settings, cache)
+
+    assert provider.covers(german_route()) is True
+    assert provider.covers(greek_route()) is False
+
+
+def test_autobahn_covers_a_route_that_only_partly_enters_germany(settings, cache):
+    """Munich to Salzburg is half Austrian; its German stretch still counts."""
+    crossing = Route(name="DE-AT", lines=[[GeoPoint(lat=48.14, lon=11.58),
+                                           GeoPoint(lat=47.80, lon=13.04)]])
+    assert incidents.AutobahnProvider(settings, cache).covers(crossing) is True
+
+
+async def test_autobahn_makes_no_request_for_a_route_outside_germany(settings, cache):
+    """The bug this fixes: a Greek route spent an Overpass slot on a German
+    feature, and Greek 'A1' would have been queried against the German API."""
+    settings.autobahn_enabled = True
+
+    def handler(request):
+        raise AssertionError(f"no request should be made, got {request.url}")
+
+    provider = incidents.AutobahnProvider(settings, cache)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await provider.fetch(greek_route(), client) == []
+
+
+async def test_explicitly_configured_roads_still_win(settings, cache):
+    """Pinning roads is a deliberate act; honour it wherever the route is."""
+    settings.autobahn_enabled = True
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    provider = incidents.AutobahnProvider(settings, cache, roads=["A8"])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await provider.fetch(greek_route(), client)
+
+    assert seen, "explicitly configured roads must still be queried"
+
+
+async def test_a_route_no_feed_covers_is_reported_clearly(settings, cache):
+    settings.autobahn_enabled = True
+    settings.incident_feeds = []
+
+    def handler(request):
+        raise AssertionError("nothing should be requested")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await incidents.find_incidents(greek_route(), settings, client, cache)
+
+    assert result["available"] is False
+    assert "covers this route" in result["reason"]
+    assert "MOTO_INCIDENT_FEEDS" in result["reason"]
+
+
+async def test_a_generic_geojson_feed_covers_everywhere(settings, cache):
+    """A provider with no `covers` method must not be filtered out."""
+    settings.incident_feeds = ["https://roads.example/feed.json"]
+    settings.autobahn_enabled = False
+
+    handler = geojson([{
+        "type": "Feature",
+        # Exactly on the route line, so the corridor filter is not what is
+        # under test here.
+        "geometry": {"type": "Point", "coordinates": [23.706, 38.05]},
+        "properties": {"title": "Rockfall"},
+    }])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await incidents.find_incidents(greek_route(), settings, client, cache)
+
+    assert result["available"] is True
+    assert [i["title"] for i in result["incidents"]] == ["Rockfall"]
