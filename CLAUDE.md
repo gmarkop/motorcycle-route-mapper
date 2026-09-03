@@ -16,8 +16,6 @@ and deleted, as is the abandoned branch that once lived in the ELAN repo.
 
 ### Open admin items
 
-- No `LICENSE` file. Private repo, so nothing is broken, but "public" would
-  legally mean look-don't-touch without one.
 - The Autobahn incident provider has **never been run against the live API** —
   see "Unverified" below.
 - Branch deletion cannot be done from this environment: the git proxy answers
@@ -50,8 +48,8 @@ internet.
 
 ### Nothing agreed for next time
 
-Open ideas, in rough order of value: a `LICENSE` file; verifying the Autobahn
-provider against the live API; more incident providers; a `MOTO_TILE_URL`
+Open ideas, in rough order of value: verifying the Autobahn provider against
+the live API; more incident providers; a `MOTO_TILE_URL`
 setting (the tile server is currently hard-coded in `mapview.js`, and the docs
 had to be corrected to say so); multi-day tours; rider-tuned rideability weights.
 

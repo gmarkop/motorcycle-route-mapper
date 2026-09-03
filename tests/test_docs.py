@@ -93,3 +93,45 @@ def test_deploy_files_are_present_and_consistent():
 def test_install_script_is_executable():
     assert (REPO / "deploy" / "install.sh").stat().st_mode & 0o111, \
         "install.sh must be executable"
+
+
+# ------------------------------------------------------------------- licensing
+
+def test_license_file_is_present_and_complete():
+    licence = (REPO / "LICENSE").read_text()
+
+    assert "MIT License" in licence
+    assert "Copyright (c)" in licence
+    # The clauses that make it MIT rather than a copyright notice with good manners.
+    assert "Permission is hereby granted, free of charge" in licence
+    assert "WITHOUT WARRANTY OF ANY KIND" in licence
+
+
+def test_license_has_a_real_copyright_holder():
+    """Guards against committing the template with its placeholder intact."""
+    licence = (REPO / "LICENSE").read_text()
+
+    assert "__COPYRIGHT_HOLDER__" not in licence, \
+        "substitute the real copyright holder before committing"
+
+    holder_line = next(line for line in licence.splitlines()
+                       if line.startswith("Copyright (c)"))
+    # "Copyright (c) <year> <name>" — four fields at minimum.
+    assert len(holder_line.split()) >= 4, f"no name on the copyright line: {holder_line!r}"
+
+
+def test_readme_agrees_with_the_license_file():
+    readme = (REPO / "README.md").read_text()
+
+    assert "MIT licensed" in readme, "the README must state the licence it ships under"
+    assert "[LICENSE](LICENSE)" in readme, "and link to the file"
+    # An MIT licence on the code grants nothing over the map data it fetches.
+    assert "ODbL" in readme and "not mine to give" in readme
+
+
+def test_vendored_license_is_still_shipped():
+    """Leaflet is BSD-2-Clause; redistributing it means keeping its licence."""
+    vendored = REPO / "moto_route" / "static" / "vendor" / "leaflet" / "LICENSE"
+
+    assert vendored.exists(), "Leaflet's licence file must ship with the vendored copy"
+    assert "Copyright" in vendored.read_text()
