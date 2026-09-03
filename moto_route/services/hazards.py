@@ -29,6 +29,7 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
+from .overpass import OverpassError, run_query
 
 log = logging.getLogger(__name__)
 
@@ -105,23 +106,14 @@ async def find_hazards(
         return cached
 
     try:
-        response = await client.post(
-            settings.overpass_url,
-            data={"data": query},
-            headers={"User-Agent": settings.user_agent},
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        log.warning("Overpass request failed: %s", exc)
+        payload = await run_query(query, settings, client)
+    except OverpassError as exc:
+        log.warning("Overpass closure query failed: %s", exc)
         stale = cache.get_stale(query)
         if stale is not None:
-            return dict(stale, stale=True, reason="Showing the last closure data — live update failed.")
-        return {
-            "available": False,
-            "reason": f"Closure data unavailable ({type(exc).__name__}).",
-            "hazards": [],
-        }
+            return dict(stale, stale=True,
+                        reason=f"Showing the last closure data — {exc}")
+        return {"available": False, "reason": str(exc), "hazards": []}
 
     hazards = _elements_to_hazards(payload.get("elements", []), route_points, settings)
     result = {

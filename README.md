@@ -155,7 +155,11 @@ Worth knowing before you rely on any of it:
   shows an empty layer, not a broken app. Confirm it returns real data before
   trusting it.
 - **Incident coverage is only what you configure.** An empty incidents layer
-  means no feed covers that road, not that the road is clear.
+  means no feed covers that road, not that the road is clear. The German
+  provider only runs for routes that actually enter Germany, and says so
+  otherwise — Greek and Austrian motorways are numbered `A1`, `A2`, … exactly
+  as German ones are, so asking the German API about them would return
+  confident nonsense.
 - **Leaflet is vendored locally**, so the interface and your route work with no
   internet at all — only uncached tiles go blank.
 - **No authentication.** `run.py` binds to localhost for that reason. Think
@@ -245,6 +249,15 @@ code 0 means "clear sky" — the best weather there is. Written as
 `CODES.get(code or -1)`, it silently becomes "Unknown". There is a regression
 test named after this exact mistake.
 
+**One door to a shared free service** (`services/overpass.py`). Three layers ask
+Overpass questions, and the browser fires all three at once — but the public
+instance grants about two slots per IP, so the third came back 429 and which one
+lost was luck. Routing every query through a single module with a semaphore, a
+retry that honours `Retry-After`, and status codes translated into plain English
+fixed a bug that had been reported as "unavailable (HTTPStatusError)": a message
+naming a Python class and explaining nothing. If you depend on somebody's free
+API, give it exactly one door.
+
 **Read-modify-write needs one transaction** (`static/js/store.js`). Five live
 layers save concurrently. Doing the read and the write as two separate
 IndexedDB transactions loses updates — each reads before the others write, the
@@ -302,6 +315,7 @@ All optional, all environment variables.
 | `MOTO_HAZARD_CORRIDOR_M` | `150` | How far off-route a closure still counts |
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
+| `MOTO_OVERPASS_CONCURRENCY` | `1` | Overpass queries in flight at once — the public instance allows about two per IP |
 | `MOTO_TANK_RANGE_KM` | `250` | Usable tank range for fuel planning |
 | `MOTO_FUEL_RESERVE` | `0.15` | Fraction of the tank held back as reserve |
 | `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |

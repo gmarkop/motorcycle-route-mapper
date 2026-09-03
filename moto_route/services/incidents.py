@@ -37,6 +37,7 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
+from .overpass import OverpassError, run_query
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,16 @@ class IncidentProvider(Protocol):
 
     async def fetch(self, route: Route, client: httpx.AsyncClient) -> list[Incident]:
         ...
+
+    def covers(self, route: Route) -> bool:
+        """Whether this provider has anything to say about this route.
+
+        Optional — a provider without one is assumed to cover everything. It
+        exists because a national feed asked about another country is worse
+        than useless: it spends a request, and its road numbering may collide
+        with the local one. Greek motorways are numbered A1, A2, … exactly as
+        German ones are.
+        """
 
 
 # --------------------------------------------------------------------- generic
@@ -140,6 +151,12 @@ class AutobahnProvider:
 
     name = "Autobahn (DE)"
 
+    #: Germany, generously bounded. A route that never enters this box cannot
+    #: use a German motorway, so asking is a wasted Overpass slot — and worse,
+    #: Greek and Austrian motorway refs look identical to German ones, so the
+    #: detection would happily return "A1" and query the wrong country's roads.
+    GERMANY = (47.2, 5.8, 55.1, 15.1)   # min_lat, min_lon, max_lat, max_lon
+
     #: The three per-road services, and what each means for a rider.
     SERVICES = {
         "roadworks": "roadworks",
@@ -152,7 +169,20 @@ class AutobahnProvider:
         self.cache = cache
         self._configured_roads = list(roads or settings.autobahn_roads)
 
+    def covers(self, route: Route) -> bool:
+        bounds = route.bounds()
+        if bounds is None:
+            return False
+        min_lat, min_lon, max_lat, max_lon = bounds
+        g_min_lat, g_min_lon, g_max_lat, g_max_lon = self.GERMANY
+        # Box overlap, not containment: a ride from Munich to Salzburg is partly
+        # in Germany and its Autobahn stretch still matters.
+        return not (max_lat < g_min_lat or min_lat > g_max_lat
+                    or max_lon < g_min_lon or min_lon > g_max_lon)
+
     async def fetch(self, route: Route, client: httpx.AsyncClient) -> list[Incident]:
+        if not self._configured_roads and not self.covers(route):
+            return []
         roads = self._configured_roads or await self._detect_roads(route, client)
         if not roads:
             return []
@@ -242,13 +272,11 @@ class AutobahnProvider:
 
         cached = self.cache.get("autobahn-roads|" + query)
         if cached is None:
-            response = await client.post(
-                self.settings.overpass_url,
-                data={"data": query},
-                headers={"User-Agent": self.settings.user_agent},
-            )
-            response.raise_for_status()
-            cached = response.json()
+            try:
+                cached = await run_query(query, self.settings, client)
+            except OverpassError as exc:
+                log.info("Could not detect motorways for the Autobahn feed: %s", exc)
+                return []
             # Motorway numbering does not change; cache it for a long time.
             self.cache.set("autobahn-roads|" + query, cached, self.settings.routing_ttl_s)
 
@@ -279,12 +307,22 @@ async def find_incidents(
     if settings.offline:
         return {"available": False, "reason": "Offline mode is enabled.", "incidents": []}
 
-    providers = build_providers(settings, cache)
-    if not providers:
+    configured = build_providers(settings, cache)
+    if not configured:
         return {
             "available": False,
             "reason": ("No incident feed configured. Set MOTO_INCIDENT_FEEDS to a "
                        "GeoJSON URL, or enable the German Autobahn provider."),
+            "incidents": [],
+        }
+
+    providers = [p for p in configured if _covers(p, route)]
+    if not providers:
+        return {
+            "available": False,
+            "reason": ("No configured incident feed covers this route — they are "
+                       f"for elsewhere ({', '.join(p.name for p in configured)}). "
+                       "Add a feed for this country with MOTO_INCIDENT_FEEDS."),
             "incidents": [],
         }
 
@@ -315,6 +353,12 @@ async def find_incidents(
             "covers this road, not that the road is clear."
         ),
     }
+
+
+def _covers(provider: IncidentProvider, route: Route) -> bool:
+    """A provider without a `covers` method is assumed to cover everywhere."""
+    check = getattr(provider, "covers", None)
+    return True if check is None else bool(check(route))
 
 
 def build_providers(settings: Settings, cache: TTLCache) -> list[IncidentProvider]:

@@ -170,7 +170,9 @@ export function showPois(payload, visibleCategories) {
 
 export function showHazards(payload) {
   $('hazard-panel').hidden = false;
-  $('hazard-note').textContent = payload.note || payload.reason || '';
+  // The note is the standing footnote about what this layer covers; the reason
+  // belongs in the list. Showing the reason in both printed it twice.
+  $('hazard-note').textContent = payload.available ? (payload.note || '') : '';
 
   if (!payload.available) {
     unavailable('hazard-panel', 'hazard-list', payload.reason);
@@ -202,7 +204,7 @@ export function showHazards(payload) {
 
 export function showIncidents(payload) {
   $('incident-panel').hidden = false;
-  const note = [payload.note || payload.reason || ''];
+  const note = payload.available ? [payload.note || ''] : [];
   if (payload.failed_sources && payload.failed_sources.length) {
     note.push(`Could not reach: ${payload.failed_sources.join(', ')}.`);
   }
@@ -239,7 +241,7 @@ export function showIncidents(payload) {
 
 export function showAlternates(payload) {
   $('alternate-panel').hidden = false;
-  $('alternate-note').textContent = payload.note || payload.reason || '';
+  $('alternate-note').textContent = payload.available ? (payload.note || '') : '';
 
   if (payload.original) {
     setCurvinessStat(payload.original.curviness, curvinessLabel(payload.original.curviness));

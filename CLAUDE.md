@@ -174,6 +174,20 @@ Every one of these was a real bug found during verification. Do not reintroduce.
 - **Douglas-Peucker is O(n²) on noisy input.** A radial pre-filter plus an
   explicit evaluation budget keeps a pathological 20k-point track under two
   seconds; the budget degrades resolution rather than failing.
+- **Overpass allows about two concurrent queries per IP.** This app asks it
+  three questions (closures, POIs, motorway refs) and the browser fires the
+  layers in parallel, so the third used to get a 429 and the rider saw
+  "unavailable (HTTPStatusError)". Everything now goes through
+  `services/overpass.py`, which holds a semaphore (`MOTO_OVERPASS_CONCURRENCY`,
+  default 1), retries transient statuses honouring `Retry-After`, and turns
+  status codes into sentences. Do not add a fourth caller that bypasses it.
+- **Never put a status code in an exception name and call it a message.**
+  `f"unavailable ({type(exc).__name__})"` is undiagnosable; the status is the
+  one fact that matters.
+- **National feeds need a coverage check.** Greek and Austrian motorways use the
+  same `A1`, `A2` numbering as German ones, so the Autobahn provider happily
+  "detected" Greek roads and queried the German API about them. Providers now
+  answer `covers(route)`; the Autobahn one checks a Germany bounding box.
 - **IndexedDB read-modify-write must happen in ONE transaction.** Five layers
   save concurrently; a `get` in one transaction followed by a `put` in another
   loses updates, because each reads before the others write. The symptom was
