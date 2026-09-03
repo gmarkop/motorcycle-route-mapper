@@ -46,12 +46,39 @@ Tailscale is the recommended way in: it gives a real certificate (so the tile
 service worker registers) and keeps an app with no authentication off the public
 internet.
 
-### Nothing agreed for next time
+### Agreed for next time: the Debian box
 
-Open ideas, in rough order of value: verifying the Autobahn provider against
-the live API; more incident providers; a `MOTO_TILE_URL`
-setting (the tile server is currently hard-coded in `mapview.js`, and the docs
-had to be corrected to say so); multi-day tours; rider-tuned rideability weights.
+The owner is deploying to their 24/7 Debian server and running two checks from
+it. That machine has a connection this build environment does not, so it can
+answer two questions nothing here can:
+
+```bash
+cd /opt/moto-route
+sudo -u motoroute .venv/bin/python tools/check_services.py
+sudo -u motoroute .venv/bin/python tools/verify_autobahn.py
+```
+
+**`check_services.py`** settles an open bug. On the owner's machine the closures
+layer reported `ConnectError` while points of interest — same host, same
+gateway — worked. The explanation is that the public Overpass servers refuse
+connections per query rather than per client, and the closure query is the heavy
+one (8 filters, `out geom`). Mirror failover shipped for it, but which endpoint
+actually turns that machine away is unverified. Read the output:
+
+- Only the closure query fails on one endpoint → the mirror rotation is doing
+  its job; consider adding more to `MOTO_OVERPASS_FALLBACK_URLS`.
+- Every Overpass endpoint fails → the problem is that machine's network, not
+  the app.
+- Everything passes → the bug is fixed and the README caveat can be trimmed.
+
+**`verify_autobahn.py`** settles the last "unverified" in the project — see
+below.
+
+### Open ideas, nothing agreed
+
+More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
+in `mapview.js`, and the docs had to be corrected to say so); multi-day tours;
+rider-tuned rideability weights.
 
 ---
 
