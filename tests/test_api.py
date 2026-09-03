@@ -275,7 +275,8 @@ def test_tank_range_is_range_checked(client, uploaded):
 
 def test_the_service_worker_and_modules_are_served(client):
     for path in ["/static/sw.js", "/static/js/app.js", "/static/js/tiles.js",
-                 "/static/js/format.js", "/static/js/mapview.js", "/static/js/panels.js"]:
+                 "/static/js/format.js", "/static/js/mapview.js",
+                 "/static/js/panels.js", "/static/js/store.js"]:
         response = client.get(path)
         assert response.status_code == 200, path
         assert response.content, path

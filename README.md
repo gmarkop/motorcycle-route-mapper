@@ -8,6 +8,11 @@ It runs on your own machine. No account, no subscription, no API key.
 
 ![Sidebar with route stats, weather scores, fuel planning and closures beside a map of the route](docs/screenshot.png)
 
+The same ride with the network switched off — route, profile and every layer
+restored from the browser, with a banner saying so:
+
+![The app offline, showing the saved ride and a banner explaining that seven layers are from the last refresh](docs/offline.png)
+
 Colour the same route by how twisty it is:
 
 ![The route coloured from blue through green to amber by corners per kilometre](docs/curviness.png)
@@ -87,9 +92,14 @@ a generic GeoJSON adapter for any feed you point it at, and Germany's keyless
 Autobahn API, which works out which motorways your route uses from OSM and needs
 no configuration at all.
 
-**Caches map tiles for the valley with no signal.** One button caches the tiles
-along your route so the map still works offline. Bounded on purpose — see the
-limits below.
+**Keeps working when the signal does not.** One button caches the map tiles
+along your route, and the ride itself — the parsed route, the last good answer
+from every live layer, and the original file — is kept in the browser. Reload
+the tab in an Alpine valley and your route is still there, with a banner saying
+plainly which parts are live and which are from the last time you had signal.
+Because the file itself is kept, a server restart is invisible too: the app
+re-uploads it and carries on rather than asking you to find the GPX again on a
+phone in the rain.
 
 **Writes the whole lot back out as GPX.** The findings are no use stuck on the
 laptop while you ride off with the original file. The export folds the weather
@@ -126,8 +136,18 @@ Worth knowing before you rely on any of it:
   which is what makes 250 enough to be useful. Raise `MOTO_MAX_CACHED_TILES`
   only when pointing at a tile server you run yourself.
 - **Offline caching needs a secure context.** Service workers only register over
-  https or on localhost, so it works when you run this on your own machine but
-  not when you reach it from a phone over plain `http://192.168.x.x`.
+  https or on localhost, so tile caching works when you run this on your own
+  machine but not when you reach it from a tablet over plain `http://192.168.x.x`.
+  The saved ride itself uses IndexedDB, which has no such restriction and works
+  either way.
+- **Offline means "the ride you already loaded".** You cannot open a *new* file
+  without reaching the server — parsing happens there. Load the route while you
+  have signal and it stays available; the live layers then keep showing their
+  last good answer, clearly marked, until you are back in range.
+- **Browser storage is not permanent.** Safari evicts script-writable storage
+  after roughly a week without visiting a site. Adding the app to the iPad home
+  screen exempts it, which matters if you cache a ride on Sunday and set off on
+  Friday.
 - **The Autobahn provider is unverified.** The live endpoints were unreachable
   from the environment this was built in, so the response mapping follows the
   documented shape and is covered by tests against recorded fixtures — but it has
@@ -171,6 +191,7 @@ moto_route/
         ├── mapview.js Everything that draws on the map
         ├── panels.js  Sidebar rendering
         ├── tiles.js   Slippy-map maths and tile prefetching
+        ├── store.js   IndexedDB: the saved ride, its layers and its file
         └── format.js  Pure formatting helpers
 ```
 
@@ -223,6 +244,13 @@ mid-write cannot leave half a JSON document that later parses as valid.
 code 0 means "clear sky" — the best weather there is. Written as
 `CODES.get(code or -1)`, it silently becomes "Unknown". There is a regression
 test named after this exact mistake.
+
+**Read-modify-write needs one transaction** (`static/js/store.js`). Five live
+layers save concurrently. Doing the read and the write as two separate
+IndexedDB transactions loses updates — each reads before the others write, the
+last writer wins, and most layers silently vanish. Issuing the `put` from inside
+the `get` callback keeps it in one transaction, which IndexedDB serialises. The
+symptom was three of seven layers persisting, and no unit test could have seen it.
 
 **Test judgement calls against fixed input** (`tests/test_weather.py`). The
 rideability score is an opinion, so the tests assert *relationships* that must
@@ -296,18 +324,22 @@ see `config.py`.
 
 The first five ideas that were listed here are now built. What is left:
 
-1. **A LICENSE file** — without one, "public repo" legally means look, don't
+1. **`DEPLOY.md` and a systemd unit**, so it survives a reboot on a home server.
+   Bind to loopback and put Tailscale in front: that gives a real certificate
+   (so the tile cache works) and keeps an app with no authentication off the
+   public internet.
+2. **A LICENSE file** — without one, "public repo" legally means look, don't
    touch. MIT or Apache-2.0 if you want others to use it.
-2. **More incident providers** — several European countries publish open feeds.
+3. **More incident providers** — several European countries publish open feeds.
    Each is one small class implementing `IncidentProvider`; the generic GeoJSON
    adapter may already handle yours with nothing but a URL.
-3. **Verify the Autobahn provider** against the live API and adjust the mapping
+4. **Verify the Autobahn provider** against the live API and adjust the mapping
    if the real payloads differ from the documented shape.
-4. **Multi-day tours** — split a long route into days with overnight stops, and
+5. **Multi-day tours** — split a long route into days with overnight stops, and
    forecast each day from its own departure time rather than one continuous ride.
-5. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
+6. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
    ten minutes costs more than any weather.
-6. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
+7. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
    one opinion. Someone on a faired tourer with heated grips should weight cold
    and rain far lower than someone on a naked bike.
 
@@ -322,6 +354,11 @@ copying:
 `httpx.MockTransport`, so the real request-building, status handling and JSON
 parsing all execute — only the socket is fake. Patching the service function
 itself would test nothing but the mock.
+
+**Some things only a browser can test.** IndexedDB, service workers and the real
+offline state do not exist under pytest, so `tools/browser_test.py` drives the
+running app in headless Chromium — including switching the network genuinely
+off. Every bug it has caught was invisible to the Python suite.
 
 **Judgement calls are tested as relationships.** The rideability score and the
 fuel planner are opinions, so the tests assert what must stay true — freezing

@@ -196,3 +196,24 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
 @media (max-width: 820px) {
   #map-overlay { left: 10px; top: 60px; }
 }
+
+/* ------------------------------------------------- offline / cached state */
+
+.banner {
+  border-left: 3px solid var(--warn);
+  background: #241f16;
+  font-size: 12px; line-height: 1.5;
+}
+.banner.offline { border-left-color: var(--bad); background: #251a19; }
+.banner.fresh { border-left-color: var(--good); background: #17241d; }
+.banner strong { display: block; margin-bottom: 2px; }
+
+#saved-list li { align-items: center; }
+#saved-list .what { cursor: pointer; }
+#saved-list .what strong { display: block; }
+#saved-list li.active .what strong { color: var(--accent); }
+.icon-button {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 6px;
+}
+.icon-button:hover { color: var(--bad); }
