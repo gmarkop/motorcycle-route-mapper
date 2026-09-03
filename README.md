@@ -376,13 +376,24 @@ you retune a weight.
 
 ## Licence and attribution
 
-The application code is yours to do as you like with. It stands on:
+The application code is **MIT licensed** — see [LICENSE](LICENSE). Use it, change
+it, ship it; just keep the copyright notice.
 
-- [Leaflet](https://leafletjs.com) 1.9.4 (BSD-2-Clause) — vendored in
-  `moto_route/static/vendor/leaflet/`, licence included
-- [OpenStreetMap](https://www.openstreetmap.org/copyright) map data (ODbL)
+Two things the MIT licence does *not* cover, because they are not mine to give:
+
+**Vendored code keeps its own licence.** Leaflet 1.9.4 sits in
+`moto_route/static/vendor/leaflet/` under BSD-2-Clause, with its licence file
+alongside it. Keep that file if you redistribute.
+
+**The data has separate terms.** An MIT licence on this code grants nothing over
+the map data, forecasts or routing it fetches at runtime. Those come from:
+
+- [OpenStreetMap](https://www.openstreetmap.org/copyright) map data (ODbL) —
+  attribution required, and share-alike if you redistribute derived data
 - [OpenTopoMap](https://opentopomap.org) tiles (CC-BY-SA)
-- [Open-Meteo](https://open-meteo.com) forecasts (CC-BY 4.0, free non-commercial)
-- [OSRM](http://project-osrm.org) routing (BSD-2-Clause)
+- [Open-Meteo](https://open-meteo.com) forecasts (CC-BY 4.0, free for
+  non-commercial use)
+- [OSRM](http://project-osrm.org) routing (BSD-2-Clause; the public demo server
+  is rate-limited and not for regular use)
 
-Respect their usage policies — they are the reason this has no subscription.
+Respect their usage policies. They are the reason this has no subscription.
