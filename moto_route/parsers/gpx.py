@@ -40,6 +40,12 @@ from .common import (
 )
 
 
+#: An unnamed route of at most this many points is read as the rider's own
+#: stops. Google Maps allows about ten waypoints and other planners a few dozen;
+#: anything longer is a driving polyline that a converter wrote out point by
+#: point.
+MAX_IMPLICIT_VIA_POINTS = 25
+
 def parse_gpx(data: bytes) -> Route:
     root = parse_xml(data)
     if localname(root).lower() != "gpx":
@@ -148,13 +154,33 @@ def _read_rte(rte: ET.Element) -> tuple[list[GeoPoint], list[Waypoint]]:
     line: list[GeoPoint] = []
     via_points: list[Waypoint] = []
 
-    for rtept in children(rte, "rtept"):
+    rtepts = list(children(rte, "rtept"))
+
+    # Does this file distinguish real stops from shaping points at all?
+    #
+    # Garmin marks them explicitly, or at least names the stops and leaves the
+    # shaping points bare, so "unnamed" reliably means "shaping" there.
+    distinguishes = any(
+        _explicit_kind(rtept) is not None or text_of(rtept, "name")
+        for rtept in rtepts
+    )
+
+    # Generic converters — the Google Maps to GPX tools — name nothing at all,
+    # so for them the count is the only signal available. A rider picks a
+    # handful of stops; a converter that dumps the whole driving polyline emits
+    # hundreds of vertices. Treating the first case as shaping points hides the
+    # rider's waypoints behind 3px grey dots; treating the second as via points
+    # buries the map under hundreds of markers. Neither is a judgement call the
+    # file lets us make properly, so the count decides.
+    unnamed_are_stops = not distinguishes and len(rtepts) <= MAX_IMPLICIT_VIA_POINTS
+
+    for rtept in rtepts:
         point = _geopoint_from_element(rtept)
         if point is None:
             continue
         line.append(point)
 
-        kind = _classify_route_point(rtept)
+        kind = _classify_route_point(rtept, unnamed_are_stops=unnamed_are_stops)
         waypoint = _waypoint_from_element(rtept, kind=kind)
         if waypoint is not None:
             via_points.append(waypoint)
@@ -180,21 +206,33 @@ def _expanded_route_points(rtept: ET.Element) -> list[GeoPoint]:
     return points
 
 
-def _classify_route_point(rtept: ET.Element) -> str:
+def _explicit_kind(rtept: ET.Element) -> str | None:
+    """The kind Garmin states outright inside ``<extensions>``, if it does."""
+    extensions = first_child(rtept, "extensions")
+    if extensions is None:
+        return None
+    for elem in extensions.iter():
+        tag = localname(elem).lower()
+        if tag == "shapingpoint":
+            return "shaping"
+        if tag == "viapoint":
+            return "via"
+    return None
+
+
+def _classify_route_point(rtept: ET.Element, *, unnamed_are_stops: bool = False) -> str:
     """Tell a real stop from a point that only bends the line onto a nicer road.
 
-    Garmin marks this explicitly inside ``<extensions>``; older files only imply
-    it by leaving the shaping point unnamed.
+    ``unnamed_are_stops`` is set when the surrounding route names nothing and is
+    short enough that its points must be the rider's own choices rather than
+    exported road geometry.
     """
-    extensions = first_child(rtept, "extensions")
-    if extensions is not None:
-        for elem in extensions.iter():
-            tag = localname(elem).lower()
-            if tag == "shapingpoint":
-                return "shaping"
-            if tag == "viapoint":
-                return "via"
-    return "via" if text_of(rtept, "name") else "shaping"
+    explicit = _explicit_kind(rtept)
+    if explicit is not None:
+        return explicit
+    if text_of(rtept, "name"):
+        return "via"
+    return "via" if unnamed_are_stops else "shaping"
 
 
 def _plausible(lat: float, lon: float) -> bool:

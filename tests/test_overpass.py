@@ -174,3 +174,51 @@ async def test_non_json_is_rejected_clearly(settings):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(overpass.OverpassError, match="not JSON"):
             await overpass.run_query("q", settings, client)
+
+
+# ------------------------------------------------- the budget must be coherent
+
+def test_the_declared_query_budget_never_exceeds_the_http_timeout():
+    """The bug this guards against.
+
+    The POI query told Overpass it could take 90 seconds while the HTTP client
+    hung up after 20, so every genuinely slow query failed client-side and was
+    reported as a connection timeout. The two numbers have to agree, and they
+    now come from one setting — this fails if anyone splits them again.
+    """
+    for budget in (10, 60, 90, 180):
+        settings = Settings(overpass_timeout_s=budget)
+        declared = int(overpass.query_header(settings).split("timeout:")[1].split("]")[0])
+        http_wait = settings.overpass_timeout_s + overpass.TRANSFER_MARGIN_S
+
+        assert declared == budget
+        assert http_wait > declared, (
+            f"HTTP wait {http_wait}s must outlast the {declared}s the query is "
+            "allowed, or a slow query can only ever fail"
+        )
+
+
+def test_every_query_builder_uses_the_shared_header():
+    """One place decides the budget; a builder writing its own would drift."""
+    from moto_route.services import hazards, pois
+
+    settings = Settings(overpass_timeout_s=42)
+    header = overpass.query_header(settings)
+    coords = [(38.0, 23.7), (38.5, 22.5)]
+
+    assert pois.build_query(coords, settings).startswith(header)
+    assert hazards.build_query(coords, 150, 50, header=header).startswith(header)
+
+
+async def test_a_timeout_explains_itself(settings):
+    """"ConnectTimeout" is a class name; a rider needs to know what to do."""
+    def handler(request):
+        raise httpx.ReadTimeout("too slow")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError) as caught:
+            await overpass.run_query("q", settings, client, attempts=1)
+
+    message = str(caught.value)
+    assert "did not answer" in message
+    assert "shorter route" in message

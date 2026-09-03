@@ -54,7 +54,22 @@ export function showSummary(route) {
   if (kinds.shaping) parts.push(`${kinds.shaping} shaping points`);
   const source = route.metadata.drawn_from === 'route'
     ? 'drawn from the route (via points), not a recorded track' : '';
-  $('waypoint-summary').textContent = [parts.join(' · '), source].filter(Boolean).join(' — ');
+
+  // A file with nothing but geometry is worth saying out loud. Otherwise the
+  // rider sees an empty map beside a route that plainly had stops in it, and
+  // has no way to tell whether the app lost them or the converter did.
+  const summary = $('waypoint-summary');
+  if (!kinds.via && !kinds.waypoint) {
+    summary.innerHTML =
+      '<strong>No waypoints in this file.</strong> It carries the route line '
+      + 'only — the tool that produced it did not export your stops. Weather, '
+      + 'fuel and closures still work; only the markers are missing.'
+      + (kinds.shaping ? ` (${kinds.shaping} shaping points define the line.)` : '');
+    summary.classList.add('warn-text');
+    return;
+  }
+  summary.classList.remove('warn-text');
+  summary.textContent = [parts.join(' · '), source].filter(Boolean).join(' — ');
 }
 
 export function setCurvinessStat(value, label) {

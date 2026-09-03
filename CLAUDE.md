@@ -181,6 +181,19 @@ Every one of these was a real bug found during verification. Do not reintroduce.
   `services/overpass.py`, which holds a semaphore (`MOTO_OVERPASS_CONCURRENCY`,
   default 1), retries transient statuses honouring `Retry-After`, and turns
   status codes into sentences. Do not add a fourth caller that bypasses it.
+- **A declared query budget and the HTTP timeout must come from one number.**
+  The POI query told Overpass it could take 90 seconds while the shared client
+  hung up after 20, so every genuinely slow query failed client-side and was
+  reported as a connection timeout. `overpass.query_header()` and the per-request
+  timeout now both derive from `MOTO_OVERPASS_TIMEOUT`, and a test asserts the
+  HTTP wait always outlasts the declared budget.
+- **"Unnamed route point" does not always mean "shaping point".** Garmin names
+  its stops and leaves shaping points bare, so the rule holds there. Generic
+  converters name nothing, and applying the rule marked every point as scenery —
+  the rider's waypoints vanished into 3px grey dots. The count decides instead:
+  at most `MAX_IMPLICIT_VIA_POINTS` unnamed points are the rider's stops, more
+  than that is an exported driving polyline. Both mistakes are equally bad, in
+  opposite directions.
 - **Never put a status code in an exception name and call it a message.**
   `f"unavailable ({type(exc).__name__})"` is undiagnosable; the status is the
   one fact that matters.
