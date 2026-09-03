@@ -24,6 +24,7 @@ const SHELL_ASSETS = [
   '/static/js/format.js',
   '/static/js/mapview.js',
   '/static/js/panels.js',
+  '/static/js/store.js',
   '/static/js/tiles.js',
   '/static/vendor/leaflet/leaflet.js',
   '/static/vendor/leaflet/leaflet.css',

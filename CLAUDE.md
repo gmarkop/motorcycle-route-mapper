@@ -8,64 +8,52 @@ Owner: gmarkop. Repo: `gmarkop/motorcycle-route-mapper` (**private**).
 
 ---
 
-## Where things stand (2 September 2026)
+## Where things stand (3 September 2026)
 
-| Branch | Commit | State |
-| --- | --- | --- |
-| `main` | `3942dc3` | Original app: parsers, weather, hazards, alternates, elevation |
-| `claude/touring-features` | `5e647b1` | **Unmerged.** Fuel planning, curviness heat map, GPX export, offline tiles, incidents |
-
-`claude/touring-features` is reviewed-by-nobody but fully tested and verified in
-a real browser. **Decide whether to merge it into `main` before building on
-top** — the next two tasks both assume it is present.
+`main` carries everything: the original app, the five touring features, and now
+offline route persistence. The old `claude/touring-features` branch is merged
+and deleted, as is the abandoned branch that once lived in the ELAN repo.
 
 ### Open admin items
 
 - No `LICENSE` file. Private repo, so nothing is broken, but "public" would
   legally mean look-don't-touch without one.
-- The abandoned branch `claude/motorcycle-route-mapper-e16cgn` still exists on
-  `gmarkop/elan_aphasia_classifier` (the project originally landed in the wrong
-  repo). The owner agreed to delete it; the git proxy here rejects delete
-  refspecs and this GitHub app has no `delete_branch` tool, so **only the owner
-  can remove it**, via the GitHub branches page.
 - The Autobahn incident provider has **never been run against the live API** —
   see "Unverified" below.
+- Branch deletion cannot be done from this environment: the git proxy answers
+  403 to delete refspecs and the GitHub tools have `create_branch` but no
+  `delete_branch`. The owner deletes branches through the GitHub UI.
 
 ---
 
-## Next session: agreed work (Thursday 3 September 2026)
+## Next up
 
-Both were agreed after a question about riding with an iPad Pro and hosting the
-app on a 24/7 Debian box at home. Do them in this order.
+### Done: client-side route persistence
 
-### 1. Persist the parsed route client-side (the one that matters)
+Shipped. `static/js/store.js` keeps the parsed route, the last good response
+from every live layer, and the original file's bytes in IndexedDB, capped at
+five rides. Reloading offline restores the ride with a banner saying what is
+live and what is saved; a forgotten server route id (the in-memory store dies
+with the process) is recovered by silently re-uploading the kept file.
 
-Today the parsed route lives **only in server memory** (`RouteStore` in
-`moto_route/api.py`). The service worker caches the app shell and map tiles, so
-offline the UI loads — but the route is gone and the app comes back empty. That
-is the difference between "offline-ish" and usable in an Alpine valley.
+### Remaining: `DEPLOY.md` plus a systemd unit
 
-Plan: store the route payload (and the last successful live-layer responses) in
-IndexedDB keyed by route id, restore on boot when the network is unavailable,
-and show clearly that what is on screen is cached rather than live. The existing
-`{available, reason, stale}` response shape already carries the vocabulary for
-"this is old" — reuse it rather than inventing a second one.
-
-### 2. `DEPLOY.md` plus a systemd unit
-
-So it survives a reboot on the Debian box. Recommended path, already worked out:
+So it survives a reboot on the owner's 24/7 Debian box. The path was already
+worked out:
 
 - Bind uvicorn to `127.0.0.1` only; let Tailscale do the exposing.
-- `tailscale serve --bg 8000` gives `https://<host>.<tailnet>.ts.net` with a real
-  certificate. Requires MagicDNS + HTTPS enabled in the Tailscale admin console.
-- Also document a Caddy + port-forward + DDNS variant for anyone not on Tailscale.
+- `tailscale serve --bg 8000` gives `https://<host>.<tailnet>.ts.net` with a
+  real certificate. Needs MagicDNS + HTTPS enabled in the Tailscale admin
+  console.
+- Also document a Caddy + port-forward + DDNS variant.
 
 **Why HTTPS is non-negotiable:** service workers only register in a secure
-context. Over plain `http://<ip>:8000` the offline tile cache silently does
-nothing. Tailscale also solves the app's total lack of authentication by keeping
-it off the public internet entirely — worth saying out loud in `DEPLOY.md`,
-because an exposed instance is an open relay that will get the owner's IP banned
-from the free Overpass/Open-Meteo/OSRM services.
+context, so over plain `http://<ip>:8000` the offline *tile* cache silently does
+nothing. (The saved ride uses IndexedDB and is unaffected.) Tailscale also
+solves the app's total lack of authentication by keeping it off the public
+internet — worth saying out loud in `DEPLOY.md`, because an exposed instance is
+an open relay that will get the owner's IP banned from the free
+Overpass/Open-Meteo/OSRM services.
 
 Also note: the frontend uses absolute `/api` and `/static` paths, so it must be
 served at the **root of a hostname**, not a subpath.
@@ -98,9 +86,15 @@ MOTO_AUTOBAHN_URL=http://127.0.0.1:8940/o/autobahn \
 python run.py --no-browser
 ```
 
-Then drive the real UI with Playwright. **Browser verification is not optional
-here** — six real bugs were invisible to the unit tests and only showed up in a
-live page. See below.
+Then drive the real UI with `tools/browser_test.py`, which loads a ride, turns
+the network genuinely off, reloads, and checks the ride comes back:
+
+```bash
+python tools/browser_test.py --url http://127.0.0.1:8961/
+```
+
+**Browser verification is not optional here.** Every bug in the list below was
+invisible to `pytest` and only showed up in a live page.
 
 ---
 
@@ -181,6 +175,13 @@ Every one of these was a real bug found during verification. Do not reintroduce.
 - **Douglas-Peucker is O(n²) on noisy input.** A radial pre-filter plus an
   explicit evaluation budget keeps a pathological 20k-point track under two
   seconds; the budget degrades resolution rather than failing.
+- **IndexedDB read-modify-write must happen in ONE transaction.** Five layers
+  save concurrently; a `get` in one transaction followed by a `put` in another
+  loses updates, because each reads before the others write. The symptom was
+  three of seven layers persisting. `store.js` issues the `put` from inside the
+  `get` callback so the pair is atomic.
+- **A hidden panel still holds its old DOM.** Hiding the saved-rides list
+  without clearing it left rows for rides already deleted.
 - **`xml.etree` expands entity declarations.** Route files never need a DTD, so
   `parsers/common.py` refuses one outright. Keep that guard on any new parser.
 
