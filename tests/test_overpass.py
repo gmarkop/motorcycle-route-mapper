@@ -414,3 +414,75 @@ async def test_every_chunk_failing_is_still_a_failure(settings):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(overpass.OverpassError):
             await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+
+# ------------------------------------------------------------- the time budget
+
+async def test_a_layer_stops_when_its_budget_is_spent(monkeypatch):
+    """One stubborn chunk spent 311s — three attempts at the full timeout —
+    while the rider watched an empty panel. The budget caps the whole layer."""
+    settings = Settings(overpass_concurrency=1, overpass_deadline_s=60.0)
+    chunks = [[(38.0, 22.0)], [(38.1, 22.0)], [(38.2, 22.0)]]
+    served = []
+    clock = {"now": 1000.0}
+
+    monkeypatch.setattr(overpass.time, "monotonic", lambda: clock["now"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        served.append(1)
+        clock["now"] += 35.0          # each chunk eats most of the budget
+        return httpx.Response(200, json={"elements": [{"type": "way", "id": len(served)}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+    assert len(served) == 2, "the third chunk had no time left and was skipped"
+    assert result["partial"] is True
+    assert result["failed_chunks"] == 1
+    assert len(result["elements"]) == 2
+
+
+async def test_a_query_is_not_started_without_time_to_finish(monkeypatch):
+    settings = Settings(overpass_concurrency=1)
+    clock = {"now": 500.0}
+    monkeypatch.setattr(overpass.time, "monotonic", lambda: clock["now"])
+
+    def handler(request):
+        raise AssertionError("must not start a query it cannot finish")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError, match="Ran out of time"):
+            await overpass.run_query("q", settings, client,
+                                     deadline=clock["now"] + 5.0)
+
+
+async def test_the_request_timeout_shrinks_to_what_is_left(monkeypatch):
+    """A 105s timeout inside a 40s remaining budget would overshoot it."""
+    settings = Settings(overpass_concurrency=1)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(overpass.time, "monotonic", lambda: clock["now"])
+    seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions.get("timeout", {}).get("read"))
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await overpass.run_query("q", settings, client, deadline=40.0)
+
+    assert seen and seen[0] is not None
+    assert seen[0] <= 40.0, f"asked for {seen[0]}s inside a 40s budget"
+
+
+async def test_without_a_deadline_the_full_timeout_is_used():
+    settings = Settings(overpass_concurrency=1, overpass_timeout_s=90)
+    seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions.get("timeout", {}).get("read"))
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await overpass.run_query("q", settings, client, deadline=None)
+
+    assert seen[0] == 90 + overpass.TRANSFER_MARGIN_S

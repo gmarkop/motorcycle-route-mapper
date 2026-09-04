@@ -162,7 +162,8 @@ async def find_pois(
             "Fuel, cafes and viewpoints from OpenStreetMap. Opening hours are "
             "whatever the map says, which on a rural pump may be nothing at all."
             + (f" {cached['failed_chunks']} of {cached['total_chunks']} sections "
-               "of the route could not be checked."
+               "of the route could not be checked in the time allowed — press "
+               "Refresh to try the rest."
                if cached.get("partial") else "")
         ),
     }

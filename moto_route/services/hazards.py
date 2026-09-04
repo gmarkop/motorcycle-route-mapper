@@ -64,37 +64,58 @@ class Hazard:
         return data
 
 
+#: The tag filters that make a way interesting, as (label, filter) pairs.
+_WAY_FILTERS = (
+    '["highway"="construction"]',
+    '["highway"]["construction"]',
+    '["highway"]["access"="no"]',
+    '["highway"]["motor_vehicle"="no"]',
+    '["highway"]["seasonal"="yes"]',
+    '["highway"]["snowplowing"="no"]',
+)
+_NODE_FILTERS = (
+    '["barrier"]["access"="no"]',
+    '["barrier"="lift_gate"]',
+)
+
+
 def build_query(coords: Sequence[geo.LatLon], radius_m: float, limit: int,
-                header: str = "[out:json][timeout:90];") -> str:
+                header: str = "[out:json][timeout:90];",
+                style: str = "filtered") -> str:
     """Compose the Overpass QL query for a corridor around the route.
 
-    ``around:<radius>,lat,lon,lat,lon,...`` searches near the line through those
-    coordinates. Walking it is the expensive part of the query — and this used
-    to do it eight times, once per tag filter, which is why a 389 km route timed
-    out on the public servers while a 77 km one took 15 seconds.
+    Two shapes, because the obvious optimisation turned out to be a pessimism:
 
-    The corridor is now walked twice, once for roads and once for barrier nodes,
-    and each result set is filtered by tag afterwards. The filters are subsets of
-    what the two sets contain: every ``highway=construction`` way has a
-    ``highway`` key, and every ``barrier=lift_gate`` node has a ``barrier`` key,
-    so nothing is lost.
+    ``filtered`` (default) applies each tag filter inside its own ``around``.
+    That is eight spatial passes, which looks wasteful — but each one is
+    answered from the tag index and returns a handful of ways.
+
+    ``grouped`` walks the corridor twice into named sets and filters those. Two
+    passes instead of eight, and a much smaller query, but it materialises
+    *every* road in the corridor before any filter applies. In open country
+    that is nothing; through a town it is thousands of ways, and a chunk that
+    ``filtered`` handles in seconds times out repeatedly.
+
+    Measured on a 389 km Greek route: grouped failed its first chunk three times
+    over, while the same corridor had been answered whole in 39.5s by filtered.
     """
     joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
     around = f"around:{int(radius_m)},{joined}"
 
+    if style == "grouped":
+        body = (f'way({around})["highway"]->.roads;\n'
+                f'node({around})["barrier"]->.gates;\n(\n'
+                + "".join(f"  way.roads{f};\n" for f in _WAY_FILTERS)
+                + "".join(f"  node.gates{f};\n" for f in _NODE_FILTERS)
+                + ");")
+    else:
+        body = ("(\n"
+                + "".join(f"  way({around}){f};\n" for f in _WAY_FILTERS)
+                + "".join(f"  node({around}){f};\n" for f in _NODE_FILTERS)
+                + ");")
+
     return f"""{header}
-way({around})["highway"]->.roads;
-node({around})["barrier"]->.gates;
-(
-  way.roads["highway"="construction"];
-  way.roads["construction"];
-  way.roads["access"="no"];
-  way.roads["motor_vehicle"="no"];
-  way.roads["seasonal"="yes"];
-  way.roads["snowplowing"="no"];
-  node.gates["access"="no"];
-  node.gates["barrier"="lift_gate"];
-);
+{body}
 out geom {limit};
 """
 
@@ -116,7 +137,8 @@ async def find_hazards(
 
     def build(chunk):
         return build_query(chunk, settings.hazard_corridor_m, settings.max_hazards,
-                           header=query_header(settings))
+                           header=query_header(settings),
+                           style=settings.overpass_query_style)
 
     # Cache on every chunk's query, so the key changes when the route does.
     cache_key = "|".join(build(chunk) for chunk in chunks)
@@ -139,7 +161,8 @@ async def find_hazards(
             "Long-lived closures only — not live traffic or today's incidents.")
     if payload.get("partial"):
         note += (f" {payload['failed_chunks']} of {payload['total_chunks']} "
-                 "sections of the route could not be checked.")
+                 "sections of the route could not be checked in the time "
+                 "allowed — press Refresh to try the rest.")
 
     result = {
         "available": True,
