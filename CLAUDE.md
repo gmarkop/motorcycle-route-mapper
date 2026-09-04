@@ -85,17 +85,28 @@ filtering those — two walks instead of eight, and 24 KB of query instead of
 6 KB — and by chunking long routes at `MOTO_OVERPASS_MAX_POINTS` (60) with a
 one-point overlap so no seam is left unsearched.
 
-**Unmeasured:** whether that is enough for a 389 km route on the public
-servers. Re-run `check_services.py --route` with a long route to find out.
+**Still unmeasured.** A second run from the box on 4 September showed
+overpass-api.de passing at 39.5 s and 21.8 s where it had returned 504 the day
+before — but that run was on `main` *without* the optimisation. Its own output
+said "8 filters", and `main` still contained the eight-walk query. That
+improvement was public-server load varying between two days, nothing more. Do
+not read it as evidence the fix works.
+
+The same run also showed kumi.systems timing out at 105 s on both queries, so
+the mirror is not a useful fallback for a long route.
 
 ### Still open: does `around:` search the line or the points?
 
-`check_services.py` has a probe for it, but it has never actually run — the
-output from the Debian box had no corridor section, because `/opt/moto-route` is
-a copy made by `install.sh` and merging does not update it. **Re-run
-`install.sh` after merging**, then look for the "Corridor semantics" section.
-The checker now prints the path and commit it is running from so a stale copy is
-obvious.
+`check_services.py` has a probe for it and it has still never produced an
+answer. The first run missed it entirely (a stale `/opt/moto-route` copy); the
+second reached it but timed out, because the probe took the middle *half* of the
+route, simplified it finely and sent it unchunked — a query more expensive than
+any the app issues. It now takes a 25 km stretch capped at the chunk size, which
+costs about as much as one ordinary chunk.
+
+The checker also used to send the whole route as one query, measuring something
+the app never does. It now chunks exactly as the app does and reports the total
+across chunks.
 
 The question matters: Douglas-Peucker leaves consecutive query points kilometres
 apart on straight roads, so if `around:` searches near each coordinate rather
