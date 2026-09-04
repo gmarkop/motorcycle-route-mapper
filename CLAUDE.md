@@ -67,22 +67,40 @@ and mirror rotation covers it. Two things this does **not** settle:
   `check_services.py --route <the real GPX>` to measure it.
 - **Whether `around:` follows the line.** See below.
 
-### Open and important: does `around:` search the line or the points?
+### Measured: long routes were timing out, and why (4 September 2026)
 
-`hazards.build_query` sends `around:150,lat,lon,lat,lon,...` and a code comment
-asserts Overpass treats the list as a linestring. **That was never verified.**
-It matters because Douglas-Peucker leaves consecutive query points kilometres
-apart on straight roads — a perfectly straight route thins to its two endpoints
-— so under the other reading almost the whole route goes unsearched and closures
-are missed with no error shown.
+`check_services.py --route Pavliani_FR.gpx` (389 km, 169 query points) on the
+owner's server:
 
-`check_services.py` now probes it: it counts highways along one stretch of the
-route twice, once with closely spaced coordinates and once with only that
-stretch's two ends. Similar counts mean a linestring; a collapse means circles.
-The probe is verified against a stub that can emulate both.
+| endpoint | closure query | POI query |
+| --- | --- | --- |
+| overpass-api.de | **504 after 10 s** | **504 after 10 s** |
+| overpass.kumi.systems | **timed out at 105 s** | 90.5 s, 152 elements |
 
-If it reports circles, the corridor query needs rebuilding — chunked queries, or
-a coordinate cap driven by spacing rather than a flat 350.
+The cause was in the query, not the network. Walking the `around:` corridor is
+what Overpass charges for, and the closure query walked the same 169-point
+corridor **eight times**, once per tag filter; the POI query three times. Fixed
+by collecting the corridor into named sets (`->.roads`, `->.gates`) and
+filtering those — two walks instead of eight, and 24 KB of query instead of
+6 KB — and by chunking long routes at `MOTO_OVERPASS_MAX_POINTS` (60) with a
+one-point overlap so no seam is left unsearched.
+
+**Unmeasured:** whether that is enough for a 389 km route on the public
+servers. Re-run `check_services.py --route` with a long route to find out.
+
+### Still open: does `around:` search the line or the points?
+
+`check_services.py` has a probe for it, but it has never actually run — the
+output from the Debian box had no corridor section, because `/opt/moto-route` is
+a copy made by `install.sh` and merging does not update it. **Re-run
+`install.sh` after merging**, then look for the "Corridor semantics" section.
+The checker now prints the path and commit it is running from so a stale copy is
+obvious.
+
+The question matters: Douglas-Peucker leaves consecutive query points kilometres
+apart on straight roads, so if `around:` searches near each coordinate rather
+than along the line, most of a long route goes unsearched and closures are
+missed with no error shown.
 
 ### Open ideas, nothing agreed
 

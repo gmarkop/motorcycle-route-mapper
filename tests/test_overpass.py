@@ -322,3 +322,95 @@ def test_an_unset_list_still_gets_its_default(monkeypatch):
 
     monkeypatch.setenv("MOTO_OVERPASS_FALLBACK_URLS", "")
     assert Settings().overpass_fallback_urls == []
+
+
+# ------------------------------------------------------------------- chunking
+
+def test_chunks_overlap_so_the_corridor_has_no_seams():
+    """Without a shared point the corridor has a hole at every join — exactly
+    where one query stops and the next starts."""
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(169)]
+    chunks = overpass.chunk_coordinates(coords, 60)
+
+    assert [len(c) for c in chunks] == [60, 60, 51]
+    for before, after in zip(chunks, chunks[1:]):
+        assert before[-1] == after[0], "a seam with no shared point is a gap"
+
+    rebuilt = chunks[0] + [p for c in chunks[1:] for p in c[1:]]
+    assert rebuilt == coords, "chunking must not lose or reorder points"
+
+
+def test_a_short_route_is_still_one_query():
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(44)]
+    assert len(overpass.chunk_coordinates(coords, 60)) == 1
+
+
+@pytest.mark.parametrize("size", [0, 1, 2])
+def test_a_degenerate_chunk_size_cannot_loop_forever(size):
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(10)]
+    chunks = overpass.chunk_coordinates(coords, size)
+    assert chunks and all(len(c) >= 2 for c in chunks)
+
+
+async def test_results_from_every_chunk_are_merged(settings):
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(169)]
+    chunks = overpass.chunk_coordinates(coords, 60)
+    served = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal served
+        served += 1
+        return httpx.Response(200, json={"elements": [
+            {"type": "way", "id": served * 10},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+    assert served == len(chunks)
+    assert len(result["elements"]) == len(chunks)
+    assert result["partial"] is False
+
+
+async def test_a_feature_spanning_a_seam_is_not_duplicated(settings):
+    """Both neighbouring queries return it; the rider should see one closure."""
+    chunks = [[(38.0, 22.0)], [(38.1, 22.0)]]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"elements": [{"type": "way", "id": 7}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+    assert len(result["elements"]) == 1
+
+
+async def test_one_failed_chunk_still_returns_the_rest(settings):
+    """Most of a route's closures beats none, as long as we say which."""
+    chunks = [[(38.0, 22.0)], [(38.1, 22.0)], [(38.2, 22.0)]]
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return httpx.Response(400, text="too complex")
+        return httpx.Response(200, json={"elements": [{"type": "way", "id": calls}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+    assert result["partial"] is True
+    assert result["failed_chunks"] == 1 and result["total_chunks"] == 3
+    assert len(result["elements"]) == 2
+
+
+async def test_every_chunk_failing_is_still_a_failure(settings):
+    chunks = [[(38.0, 22.0)], [(38.1, 22.0)]]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="nope")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError):
+            await overpass.run_chunked(chunks, lambda c: "q", settings, client)

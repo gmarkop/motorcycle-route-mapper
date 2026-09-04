@@ -86,6 +86,11 @@ class Settings:
     #: Overpass it may take 90 seconds while hanging up after 20 guarantees a
     #: timeout on any query that is actually slow.
     overpass_timeout_s: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_TIMEOUT", 90))
+    #: Coordinates per Overpass query. Cost grows with the length of the
+    #: `around:` corridor, so a long route is split into several cheap queries
+    #: rather than one that the public servers refuse. 44 points took ~15s on
+    #: overpass-api.de; 169 in one query timed out.
+    overpass_max_points: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_MAX_POINTS", 60))
     #: Other public Overpass instances to fall back to. The main server drops
     #: connections when it is busy, and a refused connection is precisely the
     #: failure a second endpoint fixes. Comma-separated; set empty to disable.

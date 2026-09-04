@@ -43,6 +43,23 @@ def test_query_uses_an_around_corridor_not_a_bounding_box():
     assert "[out:json]" in query and "out geom 50;" in query
 
 
+def test_the_corridor_is_walked_twice_not_eight_times():
+    """A 389 km route timed out on the public servers because every tag filter
+    re-walked the whole corridor. Once for roads, once for barrier nodes."""
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(169)]
+    query = hazards.build_query(coords, 150, 200)
+
+    assert query.count("around:") == 2
+    assert "->.roads;" in query and "->.gates;" in query
+    # Every filter must draw from one of those two sets, or it silently
+    # searches nothing.
+    for tag in ('"highway"="construction"', '"construction"', '"access"="no"',
+                '"motor_vehicle"="no"', '"seasonal"="yes"', '"snowplowing"="no"'):
+        assert f"way.roads[{tag}]" in query, tag
+    assert 'node.gates["access"="no"]' in query
+    assert 'node.gates["barrier"="lift_gate"]' in query
+
+
 def test_query_covers_construction_gates_and_access_restrictions():
     query = hazards.build_query([(48.0, 11.0), (48.1, 11.0)], 150, 50)
 
@@ -50,6 +67,7 @@ def test_query_covers_construction_gates_and_access_restrictions():
     assert '"access"="no"' in query
     assert '"motor_vehicle"="no"' in query
     assert 'node(' in query and '"barrier"' in query
+    assert "out geom" in query
 
 
 def test_long_routes_are_thinned_before_querying():

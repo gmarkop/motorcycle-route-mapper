@@ -83,6 +83,29 @@ async def check_overpass(settings: Settings, client: httpx.AsyncClient,
                 failures.append(f"{host}: {label}")
 
 
+def describe_checkout(repo: Path) -> str:
+    """Say which copy of the code is running.
+
+    `install.sh` copies the repository to /opt/moto-route, so merging a fix and
+    re-running from there silently exercises the old code — a check that was
+    added and then simply did not appear in the output. Naming the path and the
+    commit makes that obvious instead of mysterious.
+    """
+    import subprocess
+
+    where = f"running from {repo}"
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%h %cs"],
+            capture_output=True, text=True, timeout=5)
+        if commit.returncode == 0 and commit.stdout.strip():
+            return f"{where}  (commit {commit.stdout.strip()})"
+    except Exception:  # noqa: BLE001 - a missing git is not worth reporting
+        pass
+    return (f"{where}  (not a git checkout — if this is an install.sh copy, "
+            "re-run install.sh after merging changes)")
+
+
 def load_route(route_path: Path):
     """Read the route file, explaining a refusal instead of raising a traceback.
 
@@ -220,6 +243,7 @@ async def main() -> int:
     if route is None:
         return 2
 
+    print(f"{DIM}{describe_checkout(repo)}{RESET}")
     print(f"Checking the services this app needs, using {route_path.name} "
           f"({route.distance_m / 1000:.0f} km, "
           f"{len(geo.simplify(route.all_latlon, 250))} query points)")

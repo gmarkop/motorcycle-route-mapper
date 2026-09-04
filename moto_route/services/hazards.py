@@ -29,7 +29,8 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
-from .overpass import OverpassError, query_header, run_query
+from .overpass import (OverpassError, chunk_coordinates, query_header,
+                        run_chunked)
 
 log = logging.getLogger(__name__)
 
@@ -67,21 +68,32 @@ def build_query(coords: Sequence[geo.LatLon], radius_m: float, limit: int,
                 header: str = "[out:json][timeout:90];") -> str:
     """Compose the Overpass QL query for a corridor around the route.
 
-    ``around:<radius>,lat,lon,lat,lon,...`` treats the coordinate list as a
-    linestring, which is exactly the corridor we want.
+    ``around:<radius>,lat,lon,lat,lon,...`` searches near the line through those
+    coordinates. Walking it is the expensive part of the query — and this used
+    to do it eight times, once per tag filter, which is why a 389 km route timed
+    out on the public servers while a 77 km one took 15 seconds.
+
+    The corridor is now walked twice, once for roads and once for barrier nodes,
+    and each result set is filtered by tag afterwards. The filters are subsets of
+    what the two sets contain: every ``highway=construction`` way has a
+    ``highway`` key, and every ``barrier=lift_gate`` node has a ``barrier`` key,
+    so nothing is lost.
     """
     joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
     around = f"around:{int(radius_m)},{joined}"
+
     return f"""{header}
+way({around})["highway"]->.roads;
+node({around})["barrier"]->.gates;
 (
-  way({around})["highway"="construction"];
-  way({around})["highway"]["construction"];
-  way({around})["highway"]["access"="no"];
-  way({around})["highway"]["motor_vehicle"="no"];
-  way({around})["highway"]["seasonal"="yes"];
-  way({around})["highway"]["snowplowing"="no"];
-  node({around})["barrier"]["access"="no"];
-  node({around})["barrier"="lift_gate"];
+  way.roads["highway"="construction"];
+  way.roads["construction"];
+  way.roads["access"="no"];
+  way.roads["motor_vehicle"="no"];
+  way.roads["seasonal"="yes"];
+  way.roads["snowplowing"="no"];
+  node.gates["access"="no"];
+  node.gates["barrier"="lift_gate"];
 );
 out geom {limit};
 """
@@ -100,35 +112,44 @@ async def find_hazards(
         return {"available": False, "reason": "Offline mode is enabled.", "hazards": []}
 
     query_coords = _query_coordinates(route_points)
-    query = build_query(query_coords, settings.hazard_corridor_m, settings.max_hazards,
-                        header=query_header(settings))
+    chunks = chunk_coordinates(query_coords, settings.overpass_max_points)
 
-    cached = cache.get(query)
+    def build(chunk):
+        return build_query(chunk, settings.hazard_corridor_m, settings.max_hazards,
+                           header=query_header(settings))
+
+    # Cache on every chunk's query, so the key changes when the route does.
+    cache_key = "|".join(build(chunk) for chunk in chunks)
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
-        payload = await run_query(query, settings, client)
+        payload = await run_chunked(chunks, build, settings, client)
     except OverpassError as exc:
         log.warning("Overpass closure query failed: %s", exc)
-        stale = cache.get_stale(query)
+        stale = cache.get_stale(cache_key)
         if stale is not None:
             return dict(stale, stale=True,
                         reason=f"Showing the last closure data — {exc}")
         return {"available": False, "reason": str(exc), "hazards": []}
 
     hazards = _elements_to_hazards(payload.get("elements", []), route_points, settings)
+    note = ("From OpenStreetMap: construction, gates and access restrictions. "
+            "Long-lived closures only — not live traffic or today's incidents.")
+    if payload.get("partial"):
+        note += (f" {payload['failed_chunks']} of {payload['total_chunks']} "
+                 "sections of the route could not be checked.")
+
     result = {
         "available": True,
         "stale": False,
+        "partial": bool(payload.get("partial")),
         "hazards": [h.to_dict() for h in hazards],
         "corridor_m": settings.hazard_corridor_m,
-        "note": (
-            "From OpenStreetMap: construction, gates and access restrictions. "
-            "Long-lived closures only — not live traffic or today's incidents."
-        ),
+        "note": note,
     }
-    cache.set(query, result, settings.hazard_ttl_s)
+    cache.set(cache_key, result, settings.hazard_ttl_s)
     return result
 
 

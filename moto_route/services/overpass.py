@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import httpx
 
+from .. import geo
 from ..config import Settings
+
+LatLon = geo.LatLon
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +182,82 @@ async def run_query(
         # only whichever happened to be last.
         raise OverpassError(f"{last} (tried {', '.join(failures)})", last.status)
     raise last or OverpassError("Overpass failed for an unknown reason.")
+
+
+def chunk_coordinates(
+    coords: Sequence[LatLon],
+    max_points: int,
+) -> list[list[LatLon]]:
+    """Split a corridor into pieces small enough for a public Overpass server.
+
+    Cost grows with the number of coordinates in the `around:` filter, so a long
+    enough route will always fail as one query — 169 points timed out where 44
+    took fifteen seconds. Chunking makes the cost per query a constant and the
+    number of queries linear, which is the right way round.
+
+    Consecutive chunks share a point. Without that overlap the corridor has a
+    gap at every seam, exactly where one query stops and the next begins.
+    """
+    if max_points < 2:
+        max_points = 2
+    if len(coords) <= max_points:
+        return [list(coords)]
+
+    chunks: list[list[LatLon]] = []
+    start = 0
+    while start < len(coords) - 1:
+        end = min(start + max_points, len(coords))
+        chunks.append(list(coords[start:end]))
+        start = end - 1          # overlap by one point, closing the seam
+    return chunks
+
+
+async def run_chunked(
+    chunks: Sequence[Sequence[LatLon]],
+    build: Callable[[Sequence[LatLon]], str],
+    settings: Settings,
+    client: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """Run one query per chunk and merge the results.
+
+    Elements are de-duplicated by (type, id), because a feature spanning a seam
+    is returned by both neighbouring queries.
+
+    A chunk that fails does not sink the layer: whatever the others found is
+    returned with ``partial`` set. Most of a route's closures beats none of
+    them, as long as the caller says which it is.
+    """
+    elements: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    failed = 0
+    last_error: OverpassError | None = None
+
+    for chunk in chunks:
+        try:
+            payload = await run_query(build(chunk), settings, client)
+        except OverpassError as exc:
+            failed += 1
+            last_error = exc
+            log.warning("Overpass chunk %d/%d failed: %s",
+                        failed, len(chunks), exc)
+            continue
+
+        for element in payload.get("elements", []):
+            key = (element.get("type"), element.get("id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            elements.append(element)
+
+    if failed == len(chunks):
+        raise last_error or OverpassError("Every part of the route failed.")
+
+    return {
+        "elements": elements,
+        "partial": failed > 0,
+        "failed_chunks": failed,
+        "total_chunks": len(chunks),
+    }
 
 
 def _host(url: str) -> str:

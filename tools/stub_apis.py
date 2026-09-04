@@ -85,7 +85,10 @@ async def overpass(request: Request):
         return {"elements": [{"type": "count", "id": 0,
                               "tags": {"total": str(total), "ways": str(total)}}]}
 
-    if '"amenity"="fuel"' in query:
+    # Matches however the POI query spells the amenity filter — it moved from
+    # three exact-match sub-queries to one regex when the corridor walks were
+    # reduced, and a stub keyed to the old spelling silently returns nothing.
+    if "amenity" in query and "viewpoint" in query:
         return {"elements": [
             _node(46.4983, 11.3548, {"amenity": "fuel", "name": "Agip Bolzano",
                                      "brand": "Agip", "opening_hours": "24/7"}, 201),
