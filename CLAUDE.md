@@ -238,6 +238,11 @@ Every one of these was a real bug found during verification. Do not reintroduce.
 - **An unset environment variable and one set to empty are different.**
   `_env_list` used to collapse them, which made a non-empty default impossible
   to switch off.
+- **The diagnostic tools take no privileges, and must not be run with sudo.**
+  `check_services.py` reads a route file from the user's home directory, and the
+  `motoroute` service account is deliberately shut out of `/home` — so
+  `sudo -u motoroute` fails on exactly the file the user wants to test. DEPLOY.md
+  once said to use sudo and caused this.
 - **Never put a status code in an exception name and call it a message.**
   `f"unavailable ({type(exc).__name__})"` is undiagnosable; the status is the
   one fact that matters.
