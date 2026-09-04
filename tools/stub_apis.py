@@ -24,6 +24,7 @@ have something to show.
 from __future__ import annotations
 
 import math
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request
@@ -70,6 +71,19 @@ async def overpass(request: Request):
     """
     form = await request.form()
     query = form.get("data", "")
+
+    if query.rstrip().endswith("out count;"):
+        # Used by tools/check_services.py to work out whether `around:` follows
+        # the line through its coordinates or only searches near each one. Set
+        # STUB_AROUND=circles to make this stub behave the second way, which is
+        # how that probe is tested without a real Overpass.
+        coord_count = query.count(",") // 2
+        if os.environ.get("STUB_AROUND") == "circles":
+            total = coord_count * 3          # scales with the number of points
+        else:
+            total = 240                      # depends on the line, not the points
+        return {"elements": [{"type": "count", "id": 0,
+                              "tags": {"total": str(total), "ways": str(total)}}]}
 
     if '"amenity"="fuel"' in query:
         return {"elements": [

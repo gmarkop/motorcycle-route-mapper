@@ -46,33 +46,43 @@ Tailscale is the recommended way in: it gives a real certificate (so the tile
 service worker registers) and keeps an app with no authentication off the public
 internet.
 
-### Agreed for next time: the Debian box
+### Done: services verified from the Debian box (4 September 2026)
 
-The owner is deploying to their 24/7 Debian server and running two checks from
-it. That machine has a connection this build environment does not, so it can
-answer two questions nothing here can:
+`tools/check_services.py` on the owner's server, using the 77 km demo route
+(44 query points), everything reachable:
 
-```bash
-cd /opt/moto-route
-sudo -u motoroute .venv/bin/python tools/check_services.py
-sudo -u motoroute .venv/bin/python tools/verify_autobahn.py
-```
+| endpoint | closure query | POI query |
+| --- | --- | --- |
+| overpass-api.de | 14.7 s, 35 elements | 12.4 s, 71 elements |
+| overpass.kumi.systems | 55.4 s, 34 elements | 60.7 s, 71 elements |
 
-**`check_services.py`** settles an open bug. On the owner's machine the closures
-layer reported `ConnectError` while points of interest — same host, same
-gateway — worked. The explanation is that the public Overpass servers refuse
-connections per query rather than per client, and the closure query is the heavy
-one (8 filters, `out geom`). Mirror failover shipped for it, but which endpoint
-actually turns that machine away is unverified. Read the output:
+Open-Meteo 0.2 s, OSRM 0.7 s, Autobahn 0.5 s.
 
-- Only the closure query fails on one endpoint → the mirror rotation is doing
-  its job; consider adding more to `MOTO_OVERPASS_FALLBACK_URLS`.
-- Every Overpass endpoint fails → the problem is that machine's network, not
-  the app.
-- Everything passes → the bug is fixed and the README caveat can be trimmed.
+So the reported `ConnectError` was a transient refusal under load, not a block,
+and mirror rotation covers it. Two things this does **not** settle:
 
-**`verify_autobahn.py`** settles the last "unverified" in the project — see
-below.
+- **Cost on a real route.** 44 query points took 14.7 s; the cap is 350. A
+  400 km tour lands in the low hundreds, and the kumi mirror is roughly four
+  times slower — a failover on a long route could exceed the 90 s budget. Run
+  `check_services.py --route <the real GPX>` to measure it.
+- **Whether `around:` follows the line.** See below.
+
+### Open and important: does `around:` search the line or the points?
+
+`hazards.build_query` sends `around:150,lat,lon,lat,lon,...` and a code comment
+asserts Overpass treats the list as a linestring. **That was never verified.**
+It matters because Douglas-Peucker leaves consecutive query points kilometres
+apart on straight roads — a perfectly straight route thins to its two endpoints
+— so under the other reading almost the whole route goes unsearched and closures
+are missed with no error shown.
+
+`check_services.py` now probes it: it counts highways along one stretch of the
+route twice, once with closely spaced coordinates and once with only that
+stretch's two ends. Similar counts mean a linestring; a collapse means circles.
+The probe is verified against a stub that can emulate both.
+
+If it reports circles, the corridor query needs rebuilding — chunked queries, or
+a coordinate cap driven by spacing rather than a flat 350.
 
 ### Open ideas, nothing agreed
 

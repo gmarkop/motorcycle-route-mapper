@@ -167,7 +167,8 @@ Worth knowing before you rely on any of it:
   points-of-interest one beside it succeeds. Attempts rotate through
   `MOTO_OVERPASS_FALLBACK_URLS`, and `python tools/check_services.py` sends the
   app's real queries to every configured endpoint so you can see which one is
-  turning you away.
+  turning you away. It is also worth running against a long route: the closure
+  query took 15 s on a 77 km route with 44 query points, and the cap is 350.
 - **Incident coverage is only what you configure.** An empty incidents layer
   means no feed covers that road, not that the road is clear. The German
   provider only runs for routes that actually enter Germany, and says so

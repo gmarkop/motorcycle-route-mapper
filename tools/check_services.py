@@ -83,6 +83,84 @@ async def check_overpass(settings: Settings, client: httpx.AsyncClient,
                 failures.append(f"{host}: {label}")
 
 
+async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient,
+                                  route, failures: list[str]) -> None:
+    """Does `around:` search the LINE through the coordinates, or just circles?
+
+    The whole corridor design rests on the first reading. Douglas-Peucker leaves
+    consecutive query points kilometres apart on a straight motorway — a
+    perfectly straight route thins to its two endpoints — so if Overpass treats
+    the list as separate 150 m circles instead of a polyline, almost the entire
+    route goes unsearched and closures are missed in silence.
+
+    The experiment: count highways along one stretch of the route twice, first
+    with closely spaced coordinates and then with only that stretch's two ends.
+    Same line either way. Similar counts mean a polyline; a collapse means
+    circles.
+    """
+    print("\nCorridor semantics (does `around:` follow the line, or only the points?)")
+
+    points = route.all_latlon
+    if len(points) < 20:
+        line("warn", "route too short to test", "needs a longer route")
+        return
+
+    # A stretch from the middle, long enough that a gap would be obvious.
+    stretch = points[len(points) // 4: 3 * len(points) // 4]
+    span_km = geo.total_distance_m(stretch) / 1000
+    dense = geo.simplify(stretch, 100.0)[:300]
+    sparse = [stretch[0], stretch[-1]]
+    gap_km = geo.haversine_m(sparse[0], sparse[1]) / 1000
+
+    def counting_query(coords):
+        joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
+        return (f"{overpass.query_header(settings)}"
+                f'way(around:{int(settings.hazard_corridor_m)},{joined})["highway"];'
+                "out count;")
+
+    def total(payload):
+        for element in payload.get("elements", []):
+            if element.get("type") == "count":
+                return int(element.get("tags", {}).get("total", 0))
+        return None
+
+    single = Settings(overpass_url=settings.overpass_endpoints[0],
+                      overpass_fallback_urls=[], overpass_concurrency=1)
+
+    dense_payload, exc, _ = await timed(overpass.run_query(counting_query(dense), single, client, attempts=1))
+    if exc is not None:
+        line("fail", "dense-coordinate count", str(exc)[:90])
+        failures.append("corridor semantics probe")
+        return
+    sparse_payload, exc, _ = await timed(overpass.run_query(counting_query(sparse), single, client, attempts=1))
+    if exc is not None:
+        line("fail", "sparse-coordinate count", str(exc)[:90])
+        failures.append("corridor semantics probe")
+        return
+
+    dense_total, sparse_total = total(dense_payload), total(sparse_payload)
+    if dense_total is None or sparse_total is None:
+        line("warn", "server did not return a count", "cannot tell; skipping")
+        return
+
+    line("ok", f"stretch of {span_km:.0f} km, endpoints {gap_km:.0f} km apart",
+         f"{len(dense)} dense points vs 2")
+    print(f"    highways found with dense coordinates: {dense_total}")
+    print(f"    highways found with only the two ends: {sparse_total}")
+
+    if dense_total == 0:
+        line("warn", "no highways found either way", "inconclusive on this route")
+    elif sparse_total >= dense_total * 0.8:
+        line("ok", "`around:` follows the line",
+             "the corridor is continuous, thinning is safe")
+    else:
+        line("fail", "`around:` searches the points, not the line",
+             f"only {100 * sparse_total / dense_total:.0f}% found")
+        failures.append(
+            "CORRIDOR GAP: thinned coordinates leave most of a long route unsearched"
+        )
+
+
 async def check_simple(name: str, url: str, client: httpx.AsyncClient,
                        failures: list[str], params: dict | None = None) -> None:
     result, exc, seconds = await timed(client.get(url, params=params or {}, timeout=30.0))
@@ -98,6 +176,8 @@ async def check_simple(name: str, url: str, client: httpx.AsyncClient,
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skip-corridor", action="store_true",
+                        help="Skip the `around:` semantics probe (two extra queries)")
     parser.add_argument("--route", default=None,
                         help="GPX/KML to build the queries from "
                              "(default: examples/dolomites_demo.gpx)")
@@ -116,6 +196,8 @@ async def main() -> int:
     async with httpx.AsyncClient(headers={"User-Agent": settings.user_agent},
                                  follow_redirects=True) as client:
         await check_overpass(settings, client, route, failures)
+        if not args.skip_corridor:
+            await check_corridor_semantics(settings, client, route, failures)
 
         print("\nOther services")
         await check_simple("Open-Meteo (weather)", settings.weather_url, client, failures,
@@ -138,6 +220,10 @@ async def main() -> int:
               "heavy query specifically.\nA working mirror in "
               "MOTO_OVERPASS_FALLBACK_URLS is the fix; the app already rotates "
               "through them.")
+        if any("CORRIDOR GAP" in f for f in failures):
+            print("\nThe corridor failure is the serious one: it means long routes "
+                  "are being searched\nonly near a few points, so closures are "
+                  "missed without any error appearing.")
     else:
         print(f"{GREEN}Everything the app needs is reachable.{RESET}")
     print("=" * 68)
