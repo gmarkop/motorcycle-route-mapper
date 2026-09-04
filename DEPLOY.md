@@ -96,6 +96,7 @@ No port forwarding, no dynamic DNS, no open ports, and a real certificate:
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 sudo tailscale serve --bg 8000
+sudo tailscale set --ssh          # optional; see "Monitoring it from the iPad"
 ```
 
 You get `https://<hostname>.<your-tailnet>.ts.net`. Install the Tailscale app on
@@ -167,6 +168,121 @@ tiles for this route**. On the road the ride, the elevation profile and the
 cached tiles keep working with no signal, and a banner tells you which data is
 live and which is from the last refresh.
 
+### Monitoring it from the iPad
+
+Two tiers, depending on how much you want to install.
+
+**Tier 1 — Safari, nothing to set up.** Bookmark:
+
+```
+https://<host>.<tailnet>.ts.net/api/health
+```
+
+JSON with `"status": "ok"` confirms three things in one tap: the box is up,
+Tailscale is up, and the app is up. That is the check to make from a petrol
+station before you bother with anything else.
+
+**Tier 2 — a real shell.** Install an SSH client: *Termius* (the free tier is
+enough, and its soft-keyboard toolbar has the keys a terminal needs) or *Blink
+Shell* (paid, better if you live in a terminal). Connect to the box's MagicDNS
+name, not an IP.
+
+Enable Tailscale SSH on the box first:
+
+```bash
+sudo tailscale set --ssh
+```
+
+This is worth doing for a tablet specifically: there is **no keypair to
+generate, store or protect on the iPad**, because authentication is your
+tailnet identity. A device that rides in a tank bag is a poor place to keep a
+private key.
+
+One caveat. The default tailnet policy permits SSH to your own devices in
+`check` mode, which periodically makes you re-authenticate in a browser —
+mid-connection, on the iPad, in Safari. If that irritates you on the road,
+either raise `checkPeriod` (up to 168 hours) or change that rule's `"action"`
+from `"check"` to `"accept"` in the admin console under Access Controls.
+
+Then the commands worth knowing:
+
+```bash
+systemctl status moto-route                              # state, uptime, recent log
+journalctl -u moto-route -f                              # follow live
+journalctl -u moto-route -n 50                           # last 50 lines
+journalctl -u moto-route --since "1 hour ago" -p warning # just the complaints
+```
+
+The last one is the useful one on tour. The Overpass deadline logs at warning
+level whenever it gives up on part of a route:
+
+```
+Overpass budget of 120s spent; skipping 1 chunk(s)
+Overpass chunk 1/3 failed: Overpass did not answer within 105s.
+```
+
+So when a panel comes back saying some sections could not be checked, that
+filter tells you which of the two it was — the budget ran out, or the server
+refused the query.
+
+Typing any of that on a soft keyboard is miserable. Put this in `~/.bashrc` on
+the box and it becomes four keystrokes:
+
+```bash
+alias mstat='systemctl status moto-route --no-pager -n 20'
+alias mlog='journalctl -u moto-route -f'
+alias mwarn='journalctl -u moto-route --since today -p warning --no-pager'
+```
+
+---
+
+## Does it come back by itself?
+
+Yes, and there is nothing for you to enable — but confirm it deliberately
+rather than discovering the answer in a hotel car park.
+
+Two independent services have to survive a reboot.
+
+**The app.** `install.sh` runs `systemctl enable --now moto-route`. Those two
+words do different jobs, and the distinction is the whole answer: `--now`
+starts it this instant, while `enable` symlinks the unit into
+`multi-user.target.wants/`, which is what makes systemd start it at every boot.
+The symlink is created because the unit ends with `[Install] WantedBy=
+multi-user.target`. Crashes are covered separately by `Restart=on-failure`,
+rate-limited to 5 restarts per 300 s so a crash loop cannot hammer the free
+APIs.
+
+**Tailscale.** `tailscaled` is enabled by its own installer, and a
+`tailscale serve --bg` mapping is written into the node's serve config, so it
+returns with the daemon after a reboot. The `--bg` matters: without it, `serve`
+runs in the foreground and dies with the shell you started it from.
+
+Four commands confirm the lot:
+
+```bash
+systemctl is-enabled moto-route    # enabled  -> starts at boot
+systemctl is-active  moto-route    # active   -> running now
+systemctl is-enabled tailscaled    # enabled
+tailscale serve status             # your https URL, not "No serve config"
+```
+
+If `serve status` prints **No serve config**, the mapping was never made
+persistent — run `sudo tailscale serve --bg 8000` again.
+
+The honest test is `sudo reboot`, then those same four commands.
+
+### What none of this survives
+
+Tailscale reaches *your* box. It is not a copy in the cloud. If the home
+connection drops or the power goes, the app is unreachable until both come
+back, wherever in Europe you happen to be.
+
+That is what the offline cache is for, and why the step above is worth the two
+minutes: load the route and press **Cache tiles for this route** before you
+leave, and the ride, the elevation profile and the map keep working with no
+signal at all. A power cut is the one failure systemd cannot do anything about
+— if the box sits somewhere unattended, a small UPS is the missing piece.
+
 ---
 
 ## Settings
@@ -198,6 +314,9 @@ journalctl -u moto-route -f          # logs
 sudo systemctl restart moto-route    # restart
 sudo systemctl stop moto-route       # stop
 ```
+
+More log filters, and how to reach all of this from the tablet, are under
+[Monitoring it from the iPad](#monitoring-it-from-the-ipad).
 
 **Updating:**
 
@@ -308,6 +427,7 @@ service refusing connections on anything but loopback; and
 `systemd-analyze verify` passing on the unit.
 
 **Not verified**, because the build environment has no systemd as PID 1 and no
-outbound network: `systemctl enable --now` itself, the Tailscale and Caddy
-recipes, and the live third-party APIs. The commands are standard and the unit
+outbound network: `systemctl enable --now` itself and therefore the reboot
+behaviour, the Tailscale and Caddy recipes including Tailscale SSH, and the
+live third-party APIs. The commands are standard and the unit
 is validated, but you are the first to run those particular steps.
