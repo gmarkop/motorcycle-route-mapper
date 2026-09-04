@@ -83,6 +83,35 @@ async def check_overpass(settings: Settings, client: httpx.AsyncClient,
                 failures.append(f"{host}: {label}")
 
 
+def load_route(route_path: Path):
+    """Read the route file, explaining a refusal instead of raising a traceback.
+
+    The permission case is the one that actually happens: this script needs no
+    privileges at all, so people reasonably run it as the service user out of
+    habit — and that account is deliberately shut out of home directories.
+    """
+    try:
+        return parse_route_bytes(route_path.read_bytes(), route_path.name)
+    except FileNotFoundError:
+        print(f"{RED}No such file: {route_path}{RESET}")
+        return None
+    except IsADirectoryError:
+        print(f"{RED}{route_path} is a directory, not a route file.{RESET}")
+        return None
+    except PermissionError:
+        print(f"{RED}Cannot read {route_path}: permission denied.{RESET}\n")
+        print("This script needs no privileges — it only reads that file and makes")
+        print("outbound requests. If you ran it with `sudo -u motoroute`, that account")
+        print("is a locked-down system user with no access to home directories.")
+        print("\n  Run it as yourself instead:\n")
+        print(f"      /opt/moto-route/.venv/bin/python tools/check_services.py "
+              f"--route {route_path}\n")
+        return None
+    except Exception as exc:  # noqa: BLE001 - a bad route file is user input
+        print(f"{RED}Could not read {route_path.name}: {exc}{RESET}")
+        return None
+
+
 async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient,
                                   route, failures: list[str]) -> None:
     """Does `around:` search the LINE through the coordinates, or just circles?
@@ -185,8 +214,11 @@ async def main() -> int:
 
     settings = Settings()
     repo = Path(__file__).resolve().parent.parent
-    route_path = Path(args.route) if args.route else repo / "examples" / "dolomites_demo.gpx"
-    route = parse_route_bytes(route_path.read_bytes(), route_path.name)
+    route_path = Path(args.route).expanduser() if args.route else repo / "examples" / "dolomites_demo.gpx"
+
+    route = load_route(route_path)
+    if route is None:
+        return 2
 
     print(f"Checking the services this app needs, using {route_path.name} "
           f"({route.distance_m / 1000:.0f} km, "
