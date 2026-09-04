@@ -51,36 +51,88 @@ async def timed(coro):
 
 async def check_overpass(settings: Settings, client: httpx.AsyncClient,
                          route, failures: list[str]) -> None:
+    """Send the app's real queries, split the way the app splits them.
+
+    This used to send the whole route as one query, which measured something
+    the app never does: a 389 km route reported 39.5s when the app was actually
+    issuing three chunks of at most 60 points each. Over-reporting the cost is
+    almost as unhelpful as not measuring it.
+    """
     print("\nOverpass (closures and points of interest)")
     coords = hazards._query_coordinates(route.all_latlon)
+    chunks = overpass.chunk_coordinates(coords, settings.overpass_max_points)
     header = overpass.query_header(settings)
 
-    queries = {
-        "closure query (heavy: 8 filters, out geom)":
-            hazards.build_query(coords, settings.hazard_corridor_m,
-                                settings.max_hazards, header=header),
-        "POI query (lighter: 3 filters, out center)":
-            pois.build_query(coords, settings),
+    builders = {
+        "closure query": lambda chunk: hazards.build_query(
+            chunk, settings.hazard_corridor_m, settings.max_hazards, header=header),
+        "POI query": lambda chunk: pois.build_query(chunk, settings),
     }
+    print(f"  {DIM}{len(coords)} query points -> {len(chunks)} chunk(s) of at most "
+          f"{settings.overpass_max_points}, as the app sends them{RESET}")
 
     for endpoint in settings.overpass_endpoints:
         host = overpass._host(endpoint)
         print(f"  {DIM}via {host}{RESET}")
-        for label, query in queries.items():
-            single = Settings(
-                overpass_url=endpoint,
-                overpass_fallback_urls=[],
-                overpass_timeout_s=settings.overpass_timeout_s,
-                overpass_concurrency=1,
-            )
+        single = Settings(
+            overpass_url=endpoint, overpass_fallback_urls=[],
+            overpass_timeout_s=settings.overpass_timeout_s, overpass_concurrency=1,
+        )
+        for label, build in builders.items():
             result, exc, seconds = await timed(
-                overpass.run_query(query, single, client, attempts=1))
-            if exc is None:
-                count = len(result.get("elements", []))
-                line("ok", f"{label}", f"{seconds:.1f}s, {count} elements")
-            else:
-                line("fail", f"{label}", f"{seconds:.1f}s — {exc}")
+                overpass.run_chunked(chunks, build, single, client))
+            if exc is not None:
+                line("fail", label, f"{seconds:.1f}s — {exc}")
                 failures.append(f"{host}: {label}")
+                continue
+
+            count = len(result.get("elements", []))
+            detail = (f"{seconds:.1f}s across {len(chunks)} chunk(s), "
+                      f"{count} elements")
+            if result.get("partial"):
+                line("warn", label,
+                     detail + f" — {result['failed_chunks']} chunk(s) failed")
+                failures.append(f"{host}: {label} (partial)")
+            else:
+                line("ok", label, detail)
+
+
+def _stretch_of(points, target_km: float):
+    """A run of roughly `target_km` taken from the middle of the route."""
+    middle = len(points) // 2
+    start = end = middle
+    covered = 0.0
+    while covered < target_km * 1000 and (start > 0 or end < len(points) - 1):
+        if start > 0:
+            start -= 1
+            covered += geo.haversine_m(points[start], points[start + 1])
+        if end < len(points) - 1:
+            end += 1
+            covered += geo.haversine_m(points[end - 1], points[end])
+    return points[start:end + 1]
+
+
+def describe_checkout(repo: Path) -> str:
+    """Say which copy of the code is running.
+
+    `install.sh` copies the repository to /opt/moto-route, so merging a fix and
+    re-running from there silently exercises the old code — a check that was
+    added and then simply did not appear in the output. Naming the path and the
+    commit makes that obvious instead of mysterious.
+    """
+    import subprocess
+
+    where = f"running from {repo}"
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%h %cs"],
+            capture_output=True, text=True, timeout=5)
+        if commit.returncode == 0 and commit.stdout.strip():
+            return f"{where}  (commit {commit.stdout.strip()})"
+    except Exception:  # noqa: BLE001 - a missing git is not worth reporting
+        pass
+    return (f"{where}  (not a git checkout — if this is an install.sh copy, "
+            "re-run install.sh after merging changes)")
 
 
 def load_route(route_path: Path):
@@ -134,12 +186,20 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
         line("warn", "route too short to test", "needs a longer route")
         return
 
-    # A stretch from the middle, long enough that a gap would be obvious.
-    stretch = points[len(points) // 4: 3 * len(points) // 4]
+    # A SHORT stretch from the middle. The probe only has to make a gap
+    # obvious, not cover the route: an earlier version took the middle half and
+    # sent it unchunked, building a query more expensive than any the app
+    # issues — it duly timed out without answering the question at all.
+    stretch = _stretch_of(points, target_km=25.0)
     span_km = geo.total_distance_m(stretch) / 1000
-    dense = geo.simplify(stretch, 100.0)[:300]
+    dense = geo.simplify(stretch, 150.0)[:settings.overpass_max_points]
     sparse = [stretch[0], stretch[-1]]
     gap_km = geo.haversine_m(sparse[0], sparse[1]) / 1000
+
+    if len(dense) < 4 or gap_km < 2:
+        line("warn", "no suitable stretch found",
+             f"{span_km:.0f} km, {len(dense)} points")
+        return
 
     def counting_query(coords):
         joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
@@ -220,6 +280,7 @@ async def main() -> int:
     if route is None:
         return 2
 
+    print(f"{DIM}{describe_checkout(repo)}{RESET}")
     print(f"Checking the services this app needs, using {route_path.name} "
           f"({route.distance_m / 1000:.0f} km, "
           f"{len(geo.simplify(route.all_latlon, 250))} query points)")

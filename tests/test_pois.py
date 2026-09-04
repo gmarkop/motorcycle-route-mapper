@@ -19,6 +19,11 @@ def cache(tmp_path) -> TTLCache:
     return TTLCache(tmp_path, "poi-test")
 
 
+def route_fixture() -> Route:
+    return Route(name="Test", lines=[[GeoPoint(lat=48.0 + i * 0.001, lon=11.0)
+                                      for i in range(1000)]])
+
+
 @pytest.fixture
 def route() -> Route:
     # ~111 km due north, so distances along the route are easy to reason about.
@@ -117,22 +122,56 @@ def test_planning_terminates_on_pathological_input():
 
 # --------------------------------------------------------------- query + parse
 
-def test_query_covers_all_three_categories_with_their_own_corridors(settings):
+def test_query_covers_all_three_categories_at_the_widest_corridor(settings):
+    """Walking the corridor is what Overpass charges for, so it is walked once
+    at the widest radius. The per-category corridor is applied afterwards."""
     query = pois.build_query([(48.0, 11.0), (48.1, 11.0)], settings)
 
-    assert '"amenity"="fuel"' in query
-    assert '"amenity"="cafe"' in query
+    assert "fuel" in query and "cafe" in query
     assert '"tourism"="viewpoint"' in query
-    # Fuel is worth a detour, a cafe is not.
-    assert f"around:{int(settings.fuel_corridor_m)}," in query
-    assert f"around:{int(settings.cafe_corridor_m)}," in query
+
+    widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
+                 settings.viewpoint_corridor_m)
+    assert f"around:{int(widest)}," in query
+    assert f"around:{int(settings.cafe_corridor_m)}," not in query, \
+        "a second, narrower corridor walk is the cost this avoids"
+
+
+async def test_the_narrow_corridors_are_still_enforced(settings, cache):
+    """The behaviour that must survive the query change.
+
+    Fuel is worth a detour and a cafe is not, so a cafe a kilometre off the
+    route must still be dropped even though the query now asks for everything
+    within fuel's radius.
+    """
+    payload = {"elements": [
+        # Both ~700 m east of a route running due north along lon 11.0.
+        {"type": "node", "id": 1, "lat": 48.05, "lon": 11.0094,
+         "tags": {"amenity": "fuel", "name": "Far pump"}},
+        {"type": "node", "id": 2, "lat": 48.05, "lon": 11.0094,
+         "tags": {"amenity": "cafe", "name": "Far cafe"}},
+    ]}
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(responder(payload))) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    names = {p["name"] for p in result["pois"]}
+    assert "Far pump" in names, "fuel at 700 m is within its 1 km corridor"
+    assert "Far cafe" not in names, "a cafe at 700 m is well outside its 300 m corridor"
 
 
 def test_query_uses_nwr_so_mapped_areas_are_not_missed(settings):
     """A motorway services is usually a way or relation, not a node."""
     query = pois.build_query([(48.0, 11.0), (48.1, 11.0)], settings)
-    assert query.count("nwr(") == 3
+    assert query.count("nwr(") == 2, "one corridor walk per tag key, not per category"
     assert "out center" in query
+
+
+def test_the_corridor_is_walked_as_few_times_as_possible(settings):
+    """The regression that mattered: a 389 km route timed out because the
+    corridor was walked once per tag filter."""
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(169)]
+    assert pois.build_query(coords, settings).count("around:") == 2
 
 
 async def test_pois_are_placed_along_the_route(route, settings, cache):

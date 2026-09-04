@@ -26,7 +26,8 @@ from .. import geo
 from ..config import Settings
 from ..models import Route
 from .cache import TTLCache
-from .overpass import OverpassError, query_header, run_query
+from .overpass import (OverpassError, chunk_coordinates, query_header,
+                        run_chunked)
 
 log = logging.getLogger(__name__)
 
@@ -75,22 +76,27 @@ class FuelPlan:
 
 
 def build_query(coords: Sequence[geo.LatLon], settings: Settings) -> str:
-    """Overpass query for the three categories, each with its own corridor.
+    """Overpass query for the three categories of stop.
 
     ``nwr`` covers nodes, ways and relations in one go: a motorway services is
     usually mapped as a way or a relation, not a node, and querying only nodes
     silently misses exactly the big stations you most want to know about.
+
+    All three categories are fetched at the widest corridor — fuel's — in two
+    passes rather than three at their own radii. Walking the corridor is what
+    costs; the per-category corridor is then applied in
+    :func:`_elements_to_pois`, which was already re-checking distances against
+    the real route anyway.
     """
     joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
-
-    def around(radius: float) -> str:
-        return f"around:{int(radius)},{joined}"
+    widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
+                 settings.viewpoint_corridor_m)
+    around = f"around:{int(widest)},{joined}"
 
     return f"""{query_header(settings)}
 (
-  nwr({around(settings.fuel_corridor_m)})["amenity"="fuel"];
-  nwr({around(settings.cafe_corridor_m)})["amenity"="cafe"];
-  nwr({around(settings.viewpoint_corridor_m)})["tourism"="viewpoint"];
+  nwr({around})["amenity"~"^(fuel|cafe)$"];
+  nwr({around})["tourism"="viewpoint"];
 );
 out center {settings.max_pois};
 """
@@ -109,20 +115,25 @@ async def find_pois(
     if settings.offline:
         return {"available": False, "reason": "Offline mode is enabled.", "pois": []}
 
-    query = build_query(_query_coordinates(route_points), settings)
+    chunks = chunk_coordinates(_query_coordinates(route_points),
+                               settings.overpass_max_points)
 
-    cached = cache.get(query)
+    def build(chunk):
+        return build_query(chunk, settings)
+
+    cache_key = "|".join(build(chunk) for chunk in chunks)
+    cached = cache.get(cache_key)
     if cached is None:
         try:
-            cached = await run_query(query, settings, client)
+            cached = await run_chunked(chunks, build, settings, client)
         except OverpassError as exc:
             log.warning("Overpass POI query failed: %s", exc)
-            stale = cache.get_stale(query)
+            stale = cache.get_stale(cache_key)
             if stale is None:
                 return {"available": False, "reason": str(exc), "pois": []}
             cached = stale
         else:
-            cache.set(query, cached, settings.hazard_ttl_s)
+            cache.set(cache_key, cached, settings.hazard_ttl_s)
 
     pois = _elements_to_pois(cached.get("elements", []), route_points, settings)
 
@@ -146,9 +157,13 @@ async def find_pois(
             for category in ("fuel", "cafe", "viewpoint")
         },
         "fuel_plan": plan.to_dict(),
+        "partial": bool(cached.get("partial")),
         "note": (
             "Fuel, cafes and viewpoints from OpenStreetMap. Opening hours are "
             "whatever the map says, which on a rural pump may be nothing at all."
+            + (f" {cached['failed_chunks']} of {cached['total_chunks']} sections "
+               "of the route could not be checked."
+               if cached.get("partial") else "")
         ),
     }
 
