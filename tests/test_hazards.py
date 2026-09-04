@@ -43,21 +43,38 @@ def test_query_uses_an_around_corridor_not_a_bounding_box():
     assert "[out:json]" in query and "out geom 50;" in query
 
 
-def test_the_corridor_is_walked_twice_not_eight_times():
-    """A 389 km route timed out on the public servers because every tag filter
-    re-walked the whole corridor. Once for roads, once for barrier nodes."""
-    coords = [(38.0 + i * 0.01, 22.0) for i in range(169)]
-    query = hazards.build_query(coords, 150, 200)
+def test_both_query_shapes_look_for_the_same_things():
+    """The shapes trade spatial passes against intermediate set size.
 
-    assert query.count("around:") == 2
-    assert "->.roads;" in query and "->.gates;" in query
-    # Every filter must draw from one of those two sets, or it silently
-    # searches nothing.
+    `filtered` runs each tag filter inside its own `around` — eight passes, but
+    each answered from the tag index. `grouped` walks the corridor twice and
+    filters named sets — fewer passes, but it materialises every road in the
+    corridor first, which through a town times out. Whichever is in use, the
+    same tags must be searched.
+    """
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(20)]
+    filtered = hazards.build_query(coords, 150, 200, style="filtered")
+    grouped = hazards.build_query(coords, 150, 200, style="grouped")
+
+    assert filtered.count("around:") == 8
+    assert grouped.count("around:") == 2
+    assert "->.roads;" in grouped and "->.gates;" in grouped
+
     for tag in ('"highway"="construction"', '"construction"', '"access"="no"',
-                '"motor_vehicle"="no"', '"seasonal"="yes"', '"snowplowing"="no"'):
-        assert f"way.roads[{tag}]" in query, tag
-    assert 'node.gates["access"="no"]' in query
-    assert 'node.gates["barrier"="lift_gate"]' in query
+                '"motor_vehicle"="no"', '"seasonal"="yes"', '"snowplowing"="no"',
+                '"barrier"="lift_gate"'):
+        assert tag in filtered, f"{tag} missing from filtered"
+        assert tag in grouped, f"{tag} missing from grouped"
+
+
+def test_the_default_shape_is_the_one_with_evidence():
+    """`grouped` failed a chunk on a real route that `filtered` had answered
+    whole. Until that is measured the other way round, filtered is the default."""
+    assert Settings().overpass_query_style == "filtered"
+
+    coords = [(38.0 + i * 0.01, 22.0) for i in range(20)]
+    default = hazards.build_query(coords, 150, 200)
+    assert default.count("around:") == 8
 
 
 def test_query_covers_construction_gates_and_access_restrictions():
@@ -66,7 +83,7 @@ def test_query_covers_construction_gates_and_access_restrictions():
     assert '"highway"="construction"' in query
     assert '"access"="no"' in query
     assert '"motor_vehicle"="no"' in query
-    assert 'node(' in query and '"barrier"' in query
+    assert '"barrier"' in query
     assert "out geom" in query
 
 

@@ -340,6 +340,8 @@ All optional, all environment variables.
 | `MOTO_OVERPASS_CONCURRENCY` | `1` | Overpass queries in flight at once — the public instance allows about two per IP |
 | `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
 | `MOTO_OVERPASS_MAX_POINTS` | `60` | Route coordinates per query; longer routes are split into several |
+| `MOTO_OVERPASS_DEADLINE` | `120` | Total seconds one layer may spend on Overpass before returning what it has |
+| `MOTO_OVERPASS_QUERY_STYLE` | `filtered` | `filtered` (tag-indexed, 8 passes) or `grouped` (2 passes, large intermediate set) |
 | `MOTO_OVERPASS_FALLBACK_URLS` | one mirror | Other Overpass instances to rotate through; empty disables |
 | `MOTO_TANK_RANGE_KM` | `250` | Usable tank range for fuel planning |
 | `MOTO_FUEL_RESERVE` | `0.15` | Fraction of the tank held back as reserve |

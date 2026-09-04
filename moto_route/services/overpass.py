@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Sequence
 
 import httpx
@@ -37,6 +38,10 @@ RETRYABLE = frozenset({429, 502, 503, 504})
 #: Seconds before the first retry, doubling after that. A module constant so
 #: tests can set it to zero rather than sleeping through the backoff.
 RETRY_BASE_DELAY = 1.0
+
+#: Never start a query with less than this much of the deadline left. Beginning
+#: one that cannot finish wastes the rider's time and the server's alike.
+MIN_ATTEMPT_S = 20.0
 
 
 #: Seconds allowed on top of the query's own budget, for connecting and for
@@ -100,8 +105,15 @@ async def run_query(
     client: httpx.AsyncClient,
     *,
     attempts: int = 3,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """POST an Overpass QL query and return the parsed JSON.
+
+    ``deadline`` is a :func:`time.monotonic` instant after which no new attempt
+    starts and the per-request timeout is trimmed to what is left. Without it a
+    single stubborn chunk spent 311 seconds — three attempts at the full
+    105-second timeout — which the rider experiences as the panel never filling
+    in.
 
     Attempts rotate through the configured endpoints. A refused connection is
     the one failure a second server reliably fixes — the main instance drops
@@ -121,22 +133,30 @@ async def run_query(
     for attempt in range(attempts):
         endpoint = endpoints[attempt % len(endpoints)]
 
+        # Overriding the shared client's timeout: an Overpass query is allowed
+        # far longer than an ordinary API call, and must outlast the budget the
+        # query itself declares — but never longer than the deadline allows.
+        wait = settings.overpass_timeout_s + TRANSFER_MARGIN_S
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining < MIN_ATTEMPT_S:
+                raise last or OverpassError(
+                    f"Ran out of time for Overpass after {attempt} attempt(s)."
+                )
+            wait = min(wait, remaining)
+
         async with _semaphore(limit):
             try:
                 response = await client.post(
                     endpoint,
                     data={"data": query},
                     headers={"User-Agent": settings.user_agent},
-                    # Overriding the shared client's timeout: an Overpass query
-                    # is allowed far longer than an ordinary API call, and must
-                    # outlast the budget the query itself declares.
-                    timeout=settings.overpass_timeout_s + TRANSFER_MARGIN_S,
+                    timeout=wait,
                 )
             except httpx.TimeoutException:
                 last = OverpassError(
-                    f"Overpass did not answer within "
-                    f"{int(settings.overpass_timeout_s + TRANSFER_MARGIN_S)}s. Long "
-                    "routes make expensive queries; a shorter route, or your own "
+                    f"Overpass did not answer within {int(wait)}s. Long routes "
+                    "make expensive queries; a shorter route, or your own "
                     "Overpass server, will work."
                 )
                 failures.append(f"{_host(endpoint)}: timed out")
@@ -217,6 +237,8 @@ async def run_chunked(
     build: Callable[[Sequence[LatLon]], str],
     settings: Settings,
     client: httpx.AsyncClient,
+    *,
+    deadline_s: float | None = None,
 ) -> dict[str, Any]:
     """Run one query per chunk and merge the results.
 
@@ -230,16 +252,39 @@ async def run_chunked(
     elements: list[dict[str, Any]] = []
     seen: set[tuple[Any, Any]] = set()
     failed = 0
+    skipped = 0
     last_error: OverpassError | None = None
 
-    for chunk in chunks:
+    budget = settings.overpass_deadline_s if deadline_s is None else deadline_s
+    deadline = time.monotonic() + budget if budget else None
+
+    for index, chunk in enumerate(chunks):
+        chunk_deadline = None
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining < MIN_ATTEMPT_S:
+                # Out of budget. Returning what the earlier chunks found beats
+                # making the rider wait for sections that will not arrive.
+                skipped = len(chunks) - index
+                log.warning("Overpass budget of %.0fs spent; skipping %d chunk(s)",
+                            budget, skipped)
+                break
+
+            # Each chunk gets a fair share of what is left, so one pathological
+            # section cannot starve the rest. Without this a single hanging
+            # chunk consumed the whole budget and the rider got nothing, when
+            # the other two would have answered in a second each.
+            share = max(MIN_ATTEMPT_S, remaining / (len(chunks) - index))
+            chunk_deadline = time.monotonic() + min(share, remaining)
+
         try:
-            payload = await run_query(build(chunk), settings, client)
+            payload = await run_query(build(chunk), settings, client,
+                                      deadline=chunk_deadline)
         except OverpassError as exc:
             failed += 1
             last_error = exc
             log.warning("Overpass chunk %d/%d failed: %s",
-                        failed, len(chunks), exc)
+                        index + 1, len(chunks), exc)
             continue
 
         for element in payload.get("elements", []):
@@ -249,13 +294,14 @@ async def run_chunked(
             seen.add(key)
             elements.append(element)
 
-    if failed == len(chunks):
+    missing = failed + skipped
+    if missing == len(chunks):
         raise last_error or OverpassError("Every part of the route failed.")
 
     return {
         "elements": elements,
-        "partial": failed > 0,
-        "failed_chunks": failed,
+        "partial": missing > 0,
+        "failed_chunks": missing,
         "total_chunks": len(chunks),
     }
 

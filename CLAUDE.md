@@ -79,21 +79,78 @@ owner's server:
 
 The cause was in the query, not the network. Walking the `around:` corridor is
 what Overpass charges for, and the closure query walked the same 169-point
-corridor **eight times**, once per tag filter; the POI query three times. Fixed
-by collecting the corridor into named sets (`->.roads`, `->.gates`) and
-filtering those — two walks instead of eight, and 24 KB of query instead of
-6 KB — and by chunking long routes at `MOTO_OVERPASS_MAX_POINTS` (60) with a
-one-point overlap so no seam is left unsearched.
+corridor **eight times**, once per tag filter; the POI query three times. Two
+things were changed: long routes are chunked at `MOTO_OVERPASS_MAX_POINTS` (60)
+with a one-point overlap so no seam is left unsearched, and the eight walks were
+collapsed into two by collecting the corridor into named sets (`->.roads`,
+`->.gates`) and filtering those.
 
-**Still unmeasured.** A second run from the box on 4 September showed
+**Chunking worked. Collapsing the walks did not — it was a pessimism, and has
+been reverted.** See below.
+
+**A misread worth remembering.** A second run from the box on 4 September showed
 overpass-api.de passing at 39.5 s and 21.8 s where it had returned 504 the day
-before — but that run was on `main` *without* the optimisation. Its own output
-said "8 filters", and `main` still contained the eight-walk query. That
-improvement was public-server load varying between two days, nothing more. Do
-not read it as evidence the fix works.
+before — but that run was on `main` *without* the query change. Its own output
+said "8 filters". That improvement was public-server load varying between two
+days, and crediting the optimisation for it would have been wrong.
 
 The same run also showed kumi.systems timing out at 105 s on both queries, so
 the mirror is not a useful fallback for a long route.
+
+### Measured: two walks are slower than eight (4 September 2026)
+
+The next run from the box, on the collapsed query:
+
+    closure query  WARN  311.0s across 3 chunk(s), 27 elements, 1 chunk failed
+    POI query      PASS   66.9s, 187 elements
+
+Chunks 2 and 3 answered and returned 27 elements between them; **chunk 1 failed
+three times over**, and 311 s is almost entirely its retries at the full
+105-second timeout.
+
+Chunk 1 is the built-up end of the route, and that is the whole explanation.
+`way(around:150,COORDS)["highway"]->.roads` materialises *every* road in the
+corridor before any tag filter applies — thousands of ways through a town. The
+eight-walk form never built that set: each filter sat inside its own `around`,
+so Overpass answered it from the tag index and returned a handful of ways. Eight
+cheap indexed lookups beat one broad fetch, and the query that *looks* wasteful
+is the one that works.
+
+So the shape is now a setting rather than an argument — `MOTO_OVERPASS_QUERY_STYLE`,
+`filtered` (the eight-walk form, default, the one with evidence) or `grouped`
+(kept so the two can be A/B measured on the real server). The POI query was never
+affected: its tag filters were always inside the `around`.
+
+### Measured: a deadline, and why it needs a fair share (4 September 2026)
+
+311 s of retries is not a failure the rider should have to sit through, so
+`MOTO_OVERPASS_DEADLINE` (120 s) now bounds what one layer may spend across all
+its chunks and retries. Below `MIN_ATTEMPT_S` (20 s) remaining, no new query
+starts — beginning one that cannot finish wastes the rider's time and the
+server's alike — and each request's timeout is trimmed to what is left.
+
+The first version divided nothing: it simply gave each chunk whatever remained.
+Against a stub whose first chunk hangs forever it returned in 61 s instead of
+311 s — and with `available: False` and zero hazards, because the one hanging
+chunk had eaten the entire budget and chunks 2 and 3, which answer in about a
+second each, never ran.
+
+The fix is a fair share: each chunk gets `remaining / chunks_left`, floored at
+`MIN_ATTEMPT_S`. Re-verified against the same stub:
+
+    returned after 47s
+      available: True | partial: True
+      hazards from the chunks that DID answer: 1
+
+One pathological section can no longer starve the rest, and the panel says how
+much was skipped rather than sitting empty. `failed_chunks` now counts skipped
+chunks as well as failed ones, and the note tells the rider to press Refresh to
+try the rest.
+
+**Still to confirm on the box.** The owner reported that the local app showed
+weather only — no fuel, viewpoints, cafes or closures — for the Pavliani route.
+The likely cause is exactly this multi-minute serialised wait, but that is a
+hypothesis until they re-run after merging.
 
 ### Still open: does `around:` search the line or the points?
 

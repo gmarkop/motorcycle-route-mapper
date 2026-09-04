@@ -91,6 +91,19 @@ class Settings:
     #: rather than one that the public servers refuse. 44 points took ~15s on
     #: overpass-api.de; 169 in one query timed out.
     overpass_max_points: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_MAX_POINTS", 60))
+    #: How the closure query is shaped. "filtered" applies each tag filter
+    #: inside its own `around`, so Overpass uses the tag index and the result
+    #: sets stay small. "grouped" walks the corridor once into a named set and
+    #: filters that — fewer spatial passes, but it materialises every road in
+    #: the corridor first, which through a town is thousands of ways and times
+    #: out. Measured: grouped failed a chunk that filtered handles.
+    overpass_query_style: str = field(
+        default_factory=lambda: _env_str("MOTO_OVERPASS_QUERY_STYLE", "filtered"))
+    #: Total seconds one layer may spend on Overpass, across all its chunks and
+    #: retries. Without it a single stubborn chunk burned 311s — three attempts
+    #: at the full per-request timeout — while the rider watched an empty panel.
+    overpass_deadline_s: float = field(
+        default_factory=lambda: _env_float("MOTO_OVERPASS_DEADLINE", 120.0))
     #: Other public Overpass instances to fall back to. The main server drops
     #: connections when it is busy, and a refused connection is precisely the
     #: failure a second endpoint fixes. Comma-separated; set empty to disable.
