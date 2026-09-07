@@ -576,6 +576,47 @@ trap: a self-hosted eight aimed at the public servers rate-limits you on
 exactly the routes the fallback exists to serve — the Balkan leg of a ride from
 Italy to Greece, every time.
 
+### The log goes quiet after the download. That is normal.
+
+`update_database` prints nothing at all while it works — no progress, no
+element counts, nothing until it finishes or fails. On a 2 GB box a 37 MB
+bzip2 extract takes tens of minutes, and for all of it the log looks like this
+and no more:
+
+```
+No database directory. Initializing
+100 37.1M  100 37.1M    0     0   156M      0 --:--:-- --:--:-- --:--:--  156M
+```
+
+Two things tell you it is alive rather than wedged. The database grows:
+
+```bash
+watch -n 30 'sudo du -sh /var/lib/overpass-db'
+```
+
+and the importer is running and using CPU:
+
+```bash
+sudo docker top overpass          # expect update_database, later dispatcher
+sudo docker stats --no-stream overpass
+```
+
+A size that climbs, however slowly, means it is working. A size stuck at a few
+kilobytes with no CPU for several minutes does not.
+
+The other reassurance is negative: if `No database directory. Initializing`
+appears a *second* time, the container died and restarted, and the lines above
+it say why. One occurrence and then silence is an import in progress.
+
+Watch for the out-of-memory killer, which is the real risk on a small box:
+
+```bash
+sudo dmesg -T | grep -i "killed process" | tail
+```
+
+If it names `update_database`, the extract is too large for the RAM. Rebuild
+with fewer countries rather than trying again.
+
 ### When the import produced nothing
 
 `sudo docker logs overpass` first, then in order:
