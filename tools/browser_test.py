@@ -28,7 +28,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+try:
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError:
+    _env.require("playwright")
 
 REPO = Path(__file__).resolve().parent.parent
 DEMO = REPO / "examples" / "dolomites_demo.gpx"

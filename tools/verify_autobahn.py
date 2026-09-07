@@ -28,7 +28,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+try:
+    import httpx  # noqa: E402
+except ModuleNotFoundError:
+    _env.require("httpx")
 
 from moto_route.config import Settings  # noqa: E402
 from moto_route.models import GeoPoint, Route  # noqa: E402
