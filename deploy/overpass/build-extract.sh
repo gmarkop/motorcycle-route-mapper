@@ -165,7 +165,8 @@ echo "Add this to /etc/moto-route.env:"
 echo
 echo "    MOTO_OVERPASS_URL=http://127.0.0.1:12345/api/interpreter"
 echo "    MOTO_OVERPASS_COVERAGE_FILES=$polys"
-echo "    MOTO_OVERPASS_CONCURRENCY=4"
+echo "    # (no concurrency line needed: MOTO_OVERPASS_LOCAL_CONCURRENCY"
+echo "    #  already applies 8 to your server and 2 to the public fallback)"
 echo
 echo "Do NOT also set MOTO_OVERPASS_COVERAGE: the polygons are exact, and a"
 echo "box drawn round them would claim countries this database does not hold."

@@ -337,7 +337,8 @@ All optional, all environment variables.
 | `MOTO_HAZARD_CORRIDOR_M` | `150` | How far off-route a closure still counts |
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
-| `MOTO_OVERPASS_CONCURRENCY` | `2` | Overpass queries in flight at once — the public instance allows about two per IP; drop to `1` if rate-limited, raise it only for an Overpass you run yourself |
+| `MOTO_OVERPASS_CONCURRENCY` | `2` | Queries in flight against the **public** servers — their documented per-IP allowance; drop to `1` if rate-limited |
+| `MOTO_OVERPASS_LOCAL_CONCURRENCY` | `8` | Queries in flight against **your own** Overpass, used only for routes inside its coverage |
 | `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
 | `MOTO_OVERPASS_MAX_POINTS` | `60` | Route coordinates per query; longer routes are split into several |
 | `MOTO_OVERPASS_DEADLINE` | `120` | Total seconds one layer may spend on Overpass before returning what it has |

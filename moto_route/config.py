@@ -150,6 +150,14 @@ class Settings:
     #: layers are independent requests and serialising them doubles the wait
     #: the rider sees. Drop it back to 1 if you start seeing rate-limiting.
     overpass_concurrency: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_CONCURRENCY", 2))
+    #: Queries at once against your *own* Overpass, which has no fair-use
+    #: policy but your own patience. Kept separate from the public limit
+    #: because the two are chosen per route: a ride that leaves the coverage
+    #: falls back to the public servers, and firing a self-hosted number of
+    #: queries at them is how you get rate-limited on exactly the routes the
+    #: fallback exists to serve.
+    overpass_local_concurrency: int = field(
+        default_factory=lambda: _env_int("MOTO_OVERPASS_LOCAL_CONCURRENCY", 8))
     #: How long Overpass may spend on one query. This is declared inside the
     #: query AND used as the HTTP timeout, because the two must agree: telling
     #: Overpass it may take 90 seconds while hanging up after 20 guarantees a
@@ -275,6 +283,18 @@ class Settings:
             if url and url not in endpoints:
                 endpoints.append(url)
         return endpoints
+
+    def concurrency_for(self, endpoints: Sequence[str]) -> int:
+        """How many queries at once, given which servers are about to answer.
+
+        Only the configured primary counts as local, and only when a coverage
+        area says so — otherwise the primary *is* a public server and gets the
+        public allowance.
+        """
+        local_configured = bool(self.overpass_coverage_files or self.overpass_coverage)
+        if local_configured and endpoints and endpoints[0] == self.overpass_url:
+            return self.overpass_local_concurrency
+        return self.overpass_concurrency
 
     @property
     def coverage_area(self) -> "coverage_mod.Coverage | None":

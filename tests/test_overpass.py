@@ -730,3 +730,56 @@ async def test_the_layer_asks_only_endpoints_that_cover_the_route(monkeypatch, p
                                    coverage_points=[p for c in chunks for p in c])
 
     assert asked and all("127.0.0.1" not in url for url in asked)
+
+
+# ------------------------------------------- the allowance follows the server
+
+def test_a_covered_route_may_use_the_local_allowance(monkeypatch, poly_file):
+    settings = _local(monkeypatch, poly_file)
+    endpoints = settings.endpoints_for(ATHENS)
+    assert settings.concurrency_for(endpoints) == settings.overpass_local_concurrency
+
+
+def test_a_route_that_falls_back_gets_the_public_allowance(monkeypatch, poly_file):
+    """The gap this closes.
+
+    A self-hosted number of concurrent queries aimed at the public servers is
+    how you get rate-limited on exactly the routes the fallback exists to
+    serve — the Balkan leg of a ride to Greece, every time.
+    """
+    settings = _local(monkeypatch, poly_file)
+    endpoints = settings.endpoints_for(TIRANA)
+    assert settings.concurrency_for(endpoints) == settings.overpass_concurrency
+    assert settings.overpass_concurrency < settings.overpass_local_concurrency
+
+
+def test_without_coverage_the_primary_is_not_assumed_local(monkeypatch):
+    """No coverage means the primary is a public server, whatever its URL."""
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE_FILES", raising=False)
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE", raising=False)
+    settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter")
+    assert settings.concurrency_for(settings.overpass_endpoints) == \
+        settings.overpass_concurrency
+
+
+async def test_a_fallback_route_never_exceeds_the_public_allowance(monkeypatch, poly_file):
+    """End to end, since the limit reaching the semaphore is what matters."""
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE_FILES", poly_file)
+    settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter",
+                        overpass_fallback_urls=["https://overpass-api.de/api/interpreter"],
+                        overpass_concurrency=2, overpass_local_concurrency=8)
+    chunks = [[(41.33 + i / 100, 19.82)] for i in range(6)]      # Albania
+    state = {"now": 0, "peak": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        await asyncio.sleep(0.05)
+        state["now"] -= 1
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await overpass.run_chunked(chunks, lambda c: "q", settings, client,
+                                   coverage_points=[p for c in chunks for p in c])
+
+    assert state["peak"] <= 2, f"{state['peak']} public queries at once, allowance is 2"
