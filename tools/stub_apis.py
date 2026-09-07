@@ -62,6 +62,25 @@ def _node(lat: float, lon: float, tags: dict, node_id: int) -> dict:
     return {"type": "node", "id": node_id, "lat": lat, "lon": lon, "tags": tags}
 
 
+@app.get("/v1/elevation")
+async def elevation(request: Request):
+    """Copernicus stand-in: a mountain pass, so gradients are worth looking at.
+
+    Height rises to a summit a third of the way along the latitude range and
+    falls away after it, which gives the demanding-stretches panel something
+    real to find instead of a flat line.
+    """
+    lats = [float(v) for v in request.query_params["latitude"].split(",")]
+    lo, hi = min(lats), max(lats)
+    span = (hi - lo) or 1.0
+    out = []
+    for lat in lats:
+        t = (lat - lo) / span
+        # Triangle profile peaking at t=0.33, 1200 m of relief.
+        out.append(round(400 + 1200 * (t / 0.33 if t <= 0.33 else (1 - t) / 0.67), 1))
+    return {"elevation": out}
+
+
 @app.post("/api/interpreter")
 async def overpass(request: Request):
     """Overpass. Answers POI, motorway-ref and hazard queries from one endpoint.

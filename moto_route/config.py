@@ -88,6 +88,38 @@ def _env_bool(name: str, default: bool) -> bool:
 @dataclass(slots=True)
 class Settings:
     # --- external services ---------------------------------------------------
+    #: Open-Meteo's digital elevation model. Used only when the GPX carries no
+    #: heights of its own — which is most files produced by online converters,
+    #: and so most of the files this app is actually given.
+    elevation_url: str = field(
+        default_factory=lambda: _env_str("MOTO_ELEVATION_URL",
+                                         "https://api.open-meteo.com/v1/elevation"))
+    #: Terrain does not move. The only reason not to cache it forever is that a
+    #: better model may be published one day.
+    elevation_ttl_s: int = field(
+        default_factory=lambda: _env_int("MOTO_ELEVATION_TTL", 30 * 24 * 3600))
+    #: Spacing of elevation samples along the route. Fine enough to give the
+    #: gradient through a bend, coarse enough that a long tour is a handful of
+    #: requests rather than hundreds.
+    elevation_sample_m: float = field(
+        default_factory=lambda: _env_float("MOTO_ELEVATION_SAMPLE_M", 250.0))
+    #: Hard cap on samples, which is also a cap on requests: Open-Meteo takes
+    #: 100 coordinates at a time, so 600 samples is six calls however long the
+    #: route. Past this the spacing widens instead of the route being truncated.
+    max_elevation_samples: int = field(
+        default_factory=lambda: _env_int("MOTO_MAX_ELEVATION_SAMPLES", 600))
+    #: Curviness at or above which a stretch counts as demanding, in deg/km.
+    #: 130 is where the frontend's own labels switch from "flowing" to
+    #: "twisty", so the two agree rather than each having their own opinion.
+    demanding_curviness: float = field(
+        default_factory=lambda: _env_float("MOTO_DEMANDING_CURVINESS", 130.0))
+    #: Gradient at or above which a stretch counts as steep, in percent.
+    demanding_gradient_pct: float = field(
+        default_factory=lambda: _env_float("MOTO_DEMANDING_GRADIENT", 5.0))
+    #: How long the combination must hold to be worth mentioning. Without it a
+    #: single noisy sample on a bridge becomes a warning.
+    demanding_min_m: float = field(
+        default_factory=lambda: _env_float("MOTO_DEMANDING_MIN_M", 300.0))
     weather_url: str = field(
         default_factory=lambda: _env_str("MOTO_WEATHER_URL", "https://api.open-meteo.com/v1/forecast")
     )

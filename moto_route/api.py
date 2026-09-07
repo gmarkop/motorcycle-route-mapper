@@ -31,6 +31,7 @@ from .config import Settings, get_settings
 from .models import Route
 from .parsers import RouteParseError, SUPPORTED_EXTENSIONS, parse_route_bytes
 from .services import alternates as alternates_service
+from .services import elevation as elevation_service
 from .services import hazards as hazards_service
 from .services import incidents as incidents_service
 from .services import pois as pois_service
@@ -95,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.routing_cache = TTLCache(settings.cache_dir, "routing")
     app.state.poi_cache = TTLCache(settings.cache_dir, "pois")
     app.state.incident_cache = TTLCache(settings.cache_dir, "incidents")
+    app.state.elevation_cache = TTLCache(settings.cache_dir, "elevation")
 
     # ------------------------------------------------------------------ routes
 
@@ -206,19 +208,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"available": False, "reason": "Route is too short to measure.",
                     "samples": []}
 
+        # Gradient turns a corner into a different corner. A 180 on the flat and
+        # the same 180 on a 9% descent are not the same piece of riding, and
+        # curvature alone cannot tell them apart.
+        heights = await elevation_service.profile(
+            points, [p.ele for p in route.iter_points()], settings,
+            app.state.http, app.state.elevation_cache)
+        slopes = elevation_service.gradient_at(
+            heights.get("samples", []), [distance for _, distance, _ in profile])
+
+        samples = [
+            {
+                "lat": round(points[index][0], 6),
+                "lon": round(points[index][1], 6),
+                "distance_m": round(distance),
+                "curviness": round(value, 1),
+                "gradient_pct": slope,
+            }
+            for (index, distance, value), slope in zip(profile, slopes)
+        ]
+
         return {
             "available": True,
             "overall": round(geo.curviness_deg_per_km(points), 1),
             "window_m": window_m,
-            "samples": [
-                {
-                    "lat": round(points[index][0], 6),
-                    "lon": round(points[index][1], 6),
-                    "distance_m": round(distance),
-                    "curviness": round(value, 1),
-                }
-                for index, distance, value in profile
-            ],
+            "elevation": {"available": bool(heights.get("available")),
+                          "source": heights.get("source"),
+                          "reason": heights.get("reason")},
+            "demanding": (elevation_service.demanding_stretches(samples, settings)
+                          if heights.get("available") else []),
+            "samples": samples,
         }
 
     @app.get("/api/routes/{route_id}/export.gpx")
@@ -266,29 +285,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/routes/{route_id}/elevation")
     async def route_elevation(route_id: str) -> dict[str, Any]:
-        """Distance/elevation pairs for the profile chart.
+        """Distance, elevation and gradient along the route.
 
         Served separately from the route because a long track makes a big
-        payload, and the profile is only drawn if the file carries elevation.
+        payload. Heights come from the file when it has them and from a terrain
+        model when it does not — a converted Google Maps route carries none,
+        and used to get an empty panel here.
         """
         route = store.get(route_id)
         points = list(route.iter_points())
-        if not any(p.ele is not None for p in points):
-            return {"available": False, "reason": "This file has no elevation data.", "samples": []}
-
         coords = [p.as_latlon() for p in points]
-        cumulative = geo.cumulative_distances(coords)
-        samples = [
-            {"distance_m": round(distance), "ele": round(point.ele, 1)}
-            for point, distance in zip(points, cumulative)
-            if point.ele is not None
-        ]
-        # Keep the payload sane on a dense track; the chart is a few hundred
-        # pixels wide, so more than ~600 samples buys nothing.
-        if len(samples) > 600:
-            step = len(samples) / 600
-            samples = [samples[int(i * step)] for i in range(600)] + [samples[-1]]
-        return {"available": True, "samples": samples}
+        return await elevation_service.profile(
+            coords, [p.ele for p in points], settings,
+            app.state.http, app.state.elevation_cache)
 
     # ----------------------------------------------------------------- statics
 
