@@ -20,6 +20,7 @@ import asyncio
 import logging
 import math
 import time
+import weakref
 from typing import Any, Callable, Sequence
 
 import httpx
@@ -67,18 +68,33 @@ class OverpassError(RuntimeError):
         self.status = status
 
 
-_semaphores: dict[int, asyncio.Semaphore] = {}
+#: Semaphores per event loop, then per limit. The loop matters: an
+#: asyncio.Semaphore binds to the loop that first awaits it, and reusing it
+#: from another raises "is bound to a different event loop". The app runs one
+#: loop for its lifetime so this never bit in production, but a cache that is
+#: wrong under two loops is wrong — it made a passing test fail purely because
+#: an earlier test in the same file had used the same limit.
+_semaphores: "weakref.WeakKeyDictionary[Any, dict[int, asyncio.Semaphore]]" = (
+    weakref.WeakKeyDictionary())
 
 
 def _semaphore(limit: int) -> asyncio.Semaphore:
-    """One semaphore per configured limit, created on first use.
+    """One semaphore per (running loop, limit), created on first use.
 
-    Keyed by limit rather than made a module constant so a self-hosted Overpass
-    can be given a higher budget without restarting anything.
+    Keyed by limit rather than made a module constant so that the allowance can
+    differ between a self-hosted Overpass and the public servers, chosen per
+    route, without either sharing the other's queue.
     """
-    if limit not in _semaphores:
-        _semaphores[limit] = asyncio.Semaphore(max(1, limit))
-    return _semaphores[limit]
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop yet: nothing can await this, so a throwaway is honest.
+        return asyncio.Semaphore(max(1, limit))
+
+    per_loop = _semaphores.setdefault(loop, {})
+    if limit not in per_loop:
+        per_loop[limit] = asyncio.Semaphore(max(1, limit))
+    return per_loop[limit]
 
 
 def describe(status: int) -> str:
@@ -109,6 +125,7 @@ async def run_query(
     deadline: float | None = None,
     allowance: float | None = None,
     endpoints: Sequence[str] | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """POST an Overpass QL query and return the parsed JSON.
 
@@ -132,7 +149,9 @@ async def run_query(
     happened, not the name of a Python class.
     """
     endpoints = list(endpoints) if endpoints else settings.overpass_endpoints
-    limit = max(1, settings.overpass_concurrency)
+    # The allowance belongs to whoever is answering, not to the app: a
+    # self-hosted server has no fair-use policy, the public ones do.
+    limit = max(1, limit if limit is not None else settings.concurrency_for(endpoints))
     delay = RETRY_BASE_DELAY
     failures: list[str] = []
     last: OverpassError | None = None
@@ -308,19 +327,23 @@ async def run_chunked(
     budget = settings.overpass_deadline_s if deadline_s is None else deadline_s
     deadline = time.monotonic() + budget if budget else None
 
-    # How many turns the semaphore forces these chunks to take.
-    rounds = math.ceil(len(chunks) / max(1, settings.overpass_concurrency))
-    allowance = max(MIN_ATTEMPT_S, budget / rounds) if budget else None
-
     # Decided once for the layer from every point it will search, not per
     # chunk and not from a bounding box: a route that leaves a self-hosted
     # instance's coverage must not have half its chunks answered from a
     # database that has never heard of the other half.
+    #
+    # The width follows that choice, and must be settled before the allowance
+    # below, which divides the budget by how many turns the width forces.
     endpoints = settings.endpoints_for(coverage_points)
+    limit = settings.concurrency_for(endpoints)
+
+    # How many turns the semaphore forces these chunks to take.
+    rounds = math.ceil(len(chunks) / max(1, limit))
+    allowance = max(MIN_ATTEMPT_S, budget / rounds) if budget else None
 
     results = await asyncio.gather(
         *(run_query(build(chunk), settings, client, deadline=deadline,
-                    allowance=allowance, endpoints=endpoints)
+                    allowance=allowance, endpoints=endpoints, limit=limit)
           for chunk in chunks),
         return_exceptions=True,
     )

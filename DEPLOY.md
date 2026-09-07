@@ -509,7 +509,6 @@ curl -s -X POST http://127.0.0.1:12345/api/interpreter \
 ```
 MOTO_OVERPASS_URL=http://127.0.0.1:12345/api/interpreter
 MOTO_OVERPASS_COVERAGE_FILES=<the list the script printed>
-MOTO_OVERPASS_CONCURRENCY=4
 ```
 
 Keep `MOTO_OVERPASS_FALLBACK_URLS` at its default. Your instance is the
@@ -559,9 +558,13 @@ closure layer will report clear roads it knows nothing about.
 With `--route` it tests every point of one of your own rides and says which
 servers it will use, which is the question you actually care about.
 
-Raising `MOTO_OVERPASS_CONCURRENCY` is only worth doing once the server is your
-own. On the public servers 2 is the documented per-IP allowance; on your own
-machine the limit is the machine.
+You do not need to set a concurrency. The allowance follows whichever server
+is about to answer: `MOTO_OVERPASS_LOCAL_CONCURRENCY` (8) for a route inside
+your coverage, `MOTO_OVERPASS_CONCURRENCY` (2, the documented public per-IP
+allowance) for one that falls back. Setting a single number for both is the
+trap: a self-hosted eight aimed at the public servers rate-limits you on
+exactly the routes the fallback exists to serve — the Balkan leg of a ride from
+Italy to Greece, every time.
 
 ### What has actually been tested here
 
