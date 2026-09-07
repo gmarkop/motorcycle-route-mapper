@@ -145,10 +145,20 @@ echo "==> Merging into one extract"
 # Everything filtered so far, not just this run's countries: adding a country
 # later should extend the extract rather than replace it with only the new one.
 osmium merge --overwrite -o "$WORK/touring-europe.osm.pbf" "$WORK"/filtered/*.osm.pbf
-echo "    merged $(ls -1 "$WORK"/filtered/*.osm.pbf | wc -l) countries" 
+echo "    merged $(ls -1 "$WORK"/filtered/*.osm.pbf | wc -l) countries"
+
+# Overpass imports bzip2-compressed OSM XML, not PBF. The Docker image expects
+# to find exactly that at /db/planet.osm.bz2, and will happily accept a PBF
+# under that name and then fail to read it -- which looks like an import that
+# ran and produced an empty database. Converting here rather than inside the
+# container keeps the step visible, checkable, and done by the same osmium that
+# built the extract.
+echo "==> Converting to the format Overpass imports (bzip2 XML)"
+osmium cat --overwrite -o "$WORK/touring-europe.osm.bz2" "$WORK/touring-europe.osm.pbf"
+echo "    $(du -h "$WORK/touring-europe.osm.bz2" | cut -f1) of bzip2 XML" 
 
 echo
-echo "Done: $WORK/touring-europe.osm.pbf ($(du -h "$WORK/touring-europe.osm.pbf" | cut -f1))"
+echo "Done: $WORK/touring-europe.osm.bz2 ($(du -h "$WORK/touring-europe.osm.bz2" | cut -f1)) — import this one"
 echo "The raw downloads in $WORK/raw are no longer needed and can be deleted."
 
 # The app needs to know what this database covers, so that a tour outside it

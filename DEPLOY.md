@@ -481,23 +481,33 @@ Docker is much the easiest route on a barebone Debian box:
 
 ```bash
 sudo apt install docker.io
+sudo mkdir -p /var/lib/overpass-db
+
 sudo docker run -d --restart unless-stopped \
   -e OVERPASS_MODE=init \
   -e OVERPASS_META=no \
-  -e OVERPASS_PLANET_URL=file:///data/touring-europe.osm.pbf \
-  -e OVERPASS_DIFF_URL='' \
-  -e OVERPASS_RULES_LOAD=5 \
+  -e OVERPASS_PLANET_URL=file:///data/touring-europe.osm.bz2 \
+  -e OVERPASS_RULES_LOAD=10 \
   -v /var/lib/overpass-db:/db \
   -v /var/lib/overpass-build:/data:ro \
   -p 127.0.0.1:12345:80 \
   --name overpass wiktorn/overpass-api
 ```
 
+**Import the `.osm.bz2`, not the `.osm.pbf`.** Overpass reads bzip2-compressed
+OSM XML; the image copies whatever `OVERPASS_PLANET_URL` points at to
+`/db/planet.osm.bz2` and hands it straight to the importer. Give it a PBF under
+that name and the import runs, fails to parse a single element, and leaves you
+with an empty database that answers every query with `{"elements":[]}` — which
+is exactly the silent-wrong-answer this whole section is built to avoid.
+`build-extract.sh` therefore produces both files and tells you which to use.
+
 `OVERPASS_META=no` skips version and changeset metadata, which this app never
 reads and which costs both disk and import time. Binding to `127.0.0.1` keeps
 the instance off the network, like the app itself.
 
-Watch the import with `sudo docker logs -f overpass`. When it is serving:
+Watch the import with `sudo docker logs -f overpass`. On a 25 MB extract it is
+minutes, not hours. When it is serving:
 
 ```bash
 curl -s -X POST http://127.0.0.1:12345/api/interpreter \
@@ -565,6 +575,46 @@ allowance) for one that falls back. Setting a single number for both is the
 trap: a self-hosted eight aimed at the public servers rate-limits you on
 exactly the routes the fallback exists to serve — the Balkan leg of a ride from
 Italy to Greece, every time.
+
+### When the import produced nothing
+
+`sudo docker logs overpass` first, then in order:
+
+**The container is not running** — `sudo docker ps -a` shows it `Exited`. The
+log's last lines say why; an exit code of 137 is the kernel's out-of-memory
+killer, which on a 2 GB box means the extract is too big and needs fewer
+countries.
+
+**The log mentions `planet.osm.bz2` and a parse error** — the file handed to it
+was not bzip2 XML. This is the PBF-under-the-wrong-name mistake above. Check
+with `file /var/lib/overpass-build/touring-europe.osm.bz2`, which must say
+`bzip2 compressed data`.
+
+**The log looks fine but queries return nothing** — check the database was
+actually written: `sudo du -sh /var/lib/overpass-db`. A few kilobytes means
+nothing was imported. Also confirm the query reaches the container at all:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12345/api/interpreter \
+  --data-urlencode 'data=[out:json];out count;'
+```
+
+`000` means nothing is listening on that port; `200` means Overpass answered
+and the database really is empty.
+
+**Still importing** — `dispatcher` and `update_database` in
+`sudo docker top overpass` mean it has not finished. Queries before then
+legitimately return nothing.
+
+To start over after fixing anything:
+
+```bash
+sudo docker rm -f overpass
+sudo rm -rf /var/lib/overpass-db/*
+```
+
+The database directory must be empty for `OVERPASS_MODE=init` to import again;
+a half-written one from a failed run is not overwritten.
 
 ### What has actually been tested here
 
