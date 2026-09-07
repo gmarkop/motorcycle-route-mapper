@@ -77,10 +77,13 @@ class Settings:
     offline: bool = field(default_factory=lambda: _env_bool("MOTO_OFFLINE", False))
     request_timeout_s: float = field(default_factory=lambda: _env_float("MOTO_TIMEOUT", 20.0))
     #: How many Overpass queries may be in flight at once. The public instance
-    #: grants about two slots per IP and this app has three things to ask it,
-    #: so it queues by default rather than racing and losing one to a 429.
-    #: Raise it only for an Overpass you run yourself.
-    overpass_concurrency: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_CONCURRENCY", 1))
+    #: grants about two slots per IP, so two is the documented allowance and
+    #: not a gamble. It was 1 while a 429 was an unhandled crash; now that 429
+    #: is retried with backoff and rotated onto a mirror, queueing every query
+    #: behind every other one costs more than it saves — the closure and POI
+    #: layers are independent requests and serialising them doubles the wait
+    #: the rider sees. Drop it back to 1 if you start seeing rate-limiting.
+    overpass_concurrency: int = field(default_factory=lambda: _env_int("MOTO_OVERPASS_CONCURRENCY", 2))
     #: How long Overpass may spend on one query. This is declared inside the
     #: query AND used as the HTTP timeout, because the two must agree: telling
     #: Overpass it may take 90 seconds while hanging up after 20 guarantees a
@@ -118,6 +121,12 @@ class Settings:
     )
     weather_ttl_s: int = field(default_factory=lambda: _env_int("MOTO_WEATHER_TTL", 900))       # 15 min
     hazard_ttl_s: int = field(default_factory=lambda: _env_int("MOTO_HAZARD_TTL", 6 * 3600))    # 6 h
+    #: TTL for an answer that is missing sections, kept far shorter than the
+    #: complete one. The panel tells the rider to press Refresh to try the
+    #: rest, and caching a partial result for six hours would make that a lie:
+    #: every Refresh would replay the same gaps from the cache without ever
+    #: asking Overpass again.
+    partial_ttl_s: int = field(default_factory=lambda: _env_int("MOTO_PARTIAL_TTL", 300))   # 5 min
     routing_ttl_s: int = field(default_factory=lambda: _env_int("MOTO_ROUTING_TTL", 24 * 3600))
 
     # --- route handling ------------------------------------------------------

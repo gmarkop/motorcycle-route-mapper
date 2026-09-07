@@ -23,6 +23,7 @@ have something to show.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -69,6 +70,12 @@ async def overpass(request: Request):
     `request.form()`. Matching against the raw body instead silently fails every
     query — the percent-encoding hides the quotes the checks look for.
     """
+    # STUB_OVERPASS_DELAY holds each answer back, so the browser check can see
+    # what the panels look like while a real long-route query is still running.
+    delay = float(os.environ.get("STUB_OVERPASS_DELAY", "0"))
+    if delay:
+        await asyncio.sleep(delay)
+
     form = await request.form()
     query = form.get("data", "")
 

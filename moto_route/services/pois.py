@@ -133,7 +133,11 @@ async def find_pois(
                 return {"available": False, "reason": str(exc), "pois": []}
             cached = stale
         else:
-            cache.set(cache_key, cached, settings.hazard_ttl_s)
+            # Short TTL for a partial answer, so "press Refresh to try the
+            # rest" actually reaches Overpass instead of replaying the gaps.
+            cache.set(cache_key, cached,
+                      settings.partial_ttl_s if cached.get("partial")
+                      else settings.hazard_ttl_s)
 
     pois = _elements_to_pois(cached.get("elements", []), route_points, settings)
 

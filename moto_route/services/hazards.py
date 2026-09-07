@@ -172,7 +172,10 @@ async def find_hazards(
         "corridor_m": settings.hazard_corridor_m,
         "note": note,
     }
-    cache.set(cache_key, result, settings.hazard_ttl_s)
+    # A partial answer gets a short TTL: the note above tells the rider to press
+    # Refresh to try the rest, and the full six hours would make that a lie.
+    cache.set(cache_key, result,
+              settings.partial_ttl_s if result["partial"] else settings.hazard_ttl_s)
     return result
 
 

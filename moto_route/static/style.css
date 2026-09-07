@@ -46,6 +46,12 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px;
 .muted { color: var(--muted); }
 .tiny { font-size: 12px; }
 
+/* A layer that is being refreshed while its previous answer is still on
+   screen. Dimmed rather than emptied: the old data stays readable, and the
+   fade says a newer one is on the way. Overpass can take a minute on a long
+   route, which is a long time to look at a panel that gives no sign of life. */
+.list.refreshing { opacity: 0.5; transition: opacity 200ms ease-in; }
+
 .panel {
   background: var(--panel-2);
   border: 1px solid var(--border);

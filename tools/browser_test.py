@@ -40,8 +40,8 @@ def snapshot(page) -> dict:
         routeName: document.getElementById('route-name').textContent,
         routePaths: document.querySelectorAll('#map path').length,
         weatherRows: document.querySelectorAll('#weather-list li').length,
-        poiRows: document.querySelectorAll('#poi-list li').length,
-        hazardRows: document.querySelectorAll('#hazard-list li').length,
+        poiRows: document.querySelectorAll('#poi-list li:not(.pending)').length,
+        hazardRows: document.querySelectorAll('#hazard-list li:not(.pending)').length,
         incidentRows: document.querySelectorAll('#incident-list li').length,
         profileVisible: !document.getElementById('profile-wrap').hidden,
         savedRides: document.querySelectorAll('#saved-list li').length,
@@ -49,7 +49,8 @@ def snapshot(page) -> dict:
     })""")
 
 
-def load_route(page, path: Path, wait_for: str = "#poi-list li") -> None:
+def load_route(page, path: Path,
+               wait_for: str = "#poi-list li:not(.pending)") -> None:
     page.set_input_files("#file-input", str(path))
     page.wait_for_selector(wait_for, timeout=30000)
     page.wait_for_timeout(2500)
@@ -160,7 +161,7 @@ def run(url: str, chromium: str | None) -> list[str]:
         # 6. The store is capped, so a tablet's quota is never eaten.
         for index in range(7):
             load_route(page, DEMO if index % 2 else SHORT,
-                       "#poi-list li" if index % 2 else "#summary")
+                       "#poi-list li:not(.pending)" if index % 2 else "#summary")
         kept = page.evaluate(
             "async () => (await (await import('/static/js/store.js')).allRides()).length")
         print("6. rides kept after loading 7:", kept)

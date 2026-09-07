@@ -31,13 +31,56 @@ const state = {
 };
 
 /** The live layers, and the panel each one falls back into when it fails. */
+// `waiting` is the line shown while the layer is still being fetched. Only the
+// two Overpass-backed layers get one: everything else answers in well under a
+// second, and a message that flashes past is noise rather than feedback.
+// Without it these two panels stay hidden for a minute or more on a long route
+// and the app looks broken at exactly the moment it is working hardest.
 const LAYERS = {
   weather: { panel: 'weather-panel', list: 'weather-list' },
-  pois: { panel: 'fuel-panel', list: 'poi-list' },
-  hazards: { panel: 'hazard-panel', list: 'hazard-list' },
+  pois: {
+    panel: 'fuel-panel', list: 'poi-list',
+    waiting: 'Searching OpenStreetMap for fuel, coffee and viewpoints along the route…',
+  },
+  hazards: {
+    panel: 'hazard-panel', list: 'hazard-list',
+    waiting: 'Searching OpenStreetMap for closures and roadworks along the route…',
+  },
   incidents: { panel: 'incident-panel', list: 'incident-list' },
   alternates: { panel: 'alternate-panel', list: 'alternate-list' },
 };
+
+/**
+ * Show that a slow layer is being worked on, before its first byte arrives.
+ *
+ * Long routes are split into several Overpass queries, so this can run for a
+ * minute. Saying so beats an empty panel, and saying it *in* the panel beats
+ * only greying out the Refresh button somewhere else on the page.
+ */
+function markPending(name) {
+  const { panel, list, waiting } = LAYERS[name];
+  if (!waiting) return;
+  const target = $(list);
+
+  // A restored ride already has last night's answer on screen. Replacing that
+  // with "Searching…" would hide usable data in order to report progress, so
+  // a populated panel is only dimmed; an empty one gets the message.
+  if (!$(panel).hidden && target.children.length) {
+    target.classList.add('refreshing');
+    return;
+  }
+  $(panel).hidden = false;
+  // The `pending` class matters beyond styling: tools/browser_test.py waits on
+  // "a list item exists" to know a layer has loaded, and without something to
+  // exclude, this placeholder would satisfy that wait before any data arrived.
+  target.innerHTML = `<li class="muted tiny pending">${waiting}</li>`;
+}
+
+/** Undim a panel once its layer has settled, however it settled. */
+function clearPending(name) {
+  const entry = LAYERS[name];
+  if (entry && entry.waiting) $(entry.list).classList.remove('refreshing');
+}
 
 // -------------------------------------------------------------- file loading
 
@@ -228,6 +271,8 @@ async function refreshLiveData() {
     alternates: '/alternates',
   };
 
+  Object.keys(paths).forEach(markPending);
+
   const outcomes = await Promise.all(
     Object.entries(paths).map(([name, path]) => loadLayer(name, path, controller.signal)),
   );
@@ -262,10 +307,12 @@ async function loadLayer(name, path, signal) {
     if (!response.ok) throw new Error(payload.detail || 'Request failed');
 
     render(payload);
+    clearPending(name);
     if (state.rideKey) await store.saveLayer(state.rideKey, name, payload);
     return 'live';
   } catch (err) {
     if (err.name === 'AbortError') return 'aborted';
+    clearPending(name);
 
     const cached = await cachedLayer(name);
     if (cached) {
