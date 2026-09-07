@@ -80,7 +80,7 @@ KEEP=(
 )
 
 command -v osmium >/dev/null || { echo "osmium not found: sudo apt install osmium-tool" >&2; exit 1; }
-mkdir -p "$WORK/raw" "$WORK/filtered"
+mkdir -p "$WORK/raw" "$WORK/filtered" "$WORK/poly"
 
 # Narrow the list if --only was given, and refuse a name that is not in it --
 # a typo would otherwise look like a country that simply produced no data,
@@ -112,6 +112,13 @@ for path in "${COUNTRIES[@]}"; do
   # starting the 4 GB files again.
   curl -fL -C - -# --retry 3 --retry-delay 5 \
        -o "$target" "$REGION_BASE/$path-latest.osm.pbf"
+
+  # The clipping polygon Geofabrik used to cut this extract. It is the exact
+  # shape of what the country file holds, and the app needs it to know when a
+  # route has left the data: a bounding box cannot express "Greece and Italy
+  # but not Albania", and Albania sits inside any rectangle drawn around them.
+  curl -fL -s --retry 3 --retry-delay 5 \
+       -o "$WORK/poly/$name.poly" "$REGION_BASE/$path.poly"
 done
 
 echo "==> Filtering each country down to the tags this app queries"
@@ -146,22 +153,20 @@ echo "The raw downloads in $WORK/raw are no longer needed and can be deleted."
 
 # The app needs to know what this database covers, so that a tour outside it
 # goes to the public servers instead of being told "no closures found" by a
-# database that has simply never heard of the road.
-#
-# osmium reports (west,south,east,north); MOTO_OVERPASS_COVERAGE wants
-# (south,west,north,east). Reordering it here beats leaving a trap that shows
-# up months later as a coverage box silently rotated ninety degrees.
-echo "==> Computing the coverage box (reads the whole file; takes a minute)"
-bbox=$(osmium fileinfo -e -g data.bbox "$WORK/touring-europe.osm.pbf" | tr -d '()')
-west=$(echo "$bbox" | cut -d, -f1)
-south=$(echo "$bbox" | cut -d, -f2)
-east=$(echo "$bbox" | cut -d, -f3)
-north=$(echo "$bbox" | cut -d, -f4)
+# database that has simply never heard of the road. The clipping polygons are
+# that answer exactly; a bounding box only approximates it, and approximates
+# it in the dangerous direction -- the box around Greece and Italy contains
+# eight countries whose data is not here.
+polys=$(ls -1 "$WORK"/poly/*.poly 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+echo "==> Coverage: $(ls -1 "$WORK"/poly/*.poly 2>/dev/null | wc -l) clipping polygons"
 
 echo
 echo "Add this to /etc/moto-route.env:"
 echo
 echo "    MOTO_OVERPASS_URL=http://127.0.0.1:12345/api/interpreter"
-echo "    MOTO_OVERPASS_COVERAGE=$south,$west,$north,$east"
+echo "    MOTO_OVERPASS_COVERAGE_FILES=$polys"
 echo "    MOTO_OVERPASS_CONCURRENCY=4"
+echo
+echo "Do NOT also set MOTO_OVERPASS_COVERAGE: the polygons are exact, and a"
+echo "box drawn round them would claim countries this database does not hold."
 echo

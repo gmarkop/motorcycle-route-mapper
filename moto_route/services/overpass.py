@@ -277,7 +277,7 @@ async def run_chunked(
     client: httpx.AsyncClient,
     *,
     deadline_s: float | None = None,
-    bounds: tuple[float, float, float, float] | None = None,
+    coverage_points: Sequence[LatLon] | None = None,
 ) -> dict[str, Any]:
     """Run one query per chunk, concurrently, and merge the results.
 
@@ -312,10 +312,11 @@ async def run_chunked(
     rounds = math.ceil(len(chunks) / max(1, settings.overpass_concurrency))
     allowance = max(MIN_ATTEMPT_S, budget / rounds) if budget else None
 
-    # Decided once for the layer, not per chunk: a route that leaves a
-    # self-hosted instance's coverage must not have half its chunks answered
-    # from a database that has never heard of the other half.
-    endpoints = settings.endpoints_for(bounds)
+    # Decided once for the layer from every point it will search, not per
+    # chunk and not from a bounding box: a route that leaves a self-hosted
+    # instance's coverage must not have half its chunks answered from a
+    # database that has never heard of the other half.
+    endpoints = settings.endpoints_for(coverage_points)
 
     results = await asyncio.gather(
         *(run_query(build(chunk), settings, client, deadline=deadline,
