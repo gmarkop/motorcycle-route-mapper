@@ -65,7 +65,7 @@ async def check_overpass(settings: Settings, client: httpx.AsyncClient,
     almost as unhelpful as not measuring it.
     """
     print("\nOverpass (closures and points of interest)")
-    coords = hazards._query_coordinates(route.all_latlon)
+    coords = hazards._query_coordinates(route.all_latlon, settings)
     chunks = overpass.chunk_coordinates(coords, settings.overpass_max_points)
     header = overpass.query_header(settings)
 
@@ -331,6 +331,43 @@ async def check_simple(name: str, url: str, client: httpx.AsyncClient,
         line("ok", name, f"{seconds:.1f}s, HTTP {result.status_code}")
 
 
+def dry_run(settings: Settings, route) -> int:
+    """Build every query the checker would send, and send none of them.
+
+    This exists because a signature change in the app broke the checker and
+    nothing noticed: `pytest` does not import `tools/`, so a call here with the
+    wrong arguments stays green until someone runs it on a real box, several
+    merges later. Everything up to the HTTP call is exercised here, which is
+    where that class of mistake lives.
+
+    It is also the honest answer to "what is this about to ask for?" — useful
+    before pointing the checker at a public server with a 600 km route.
+    """
+    coords = hazards._query_coordinates(route.all_latlon, settings)
+    poi_coords = pois._query_coordinates(route.all_latlon, settings)
+    header = overpass.query_header(settings)
+
+    for label, points, build in (
+        ("closures", coords,
+         lambda chunk: hazards.build_query(chunk, settings.hazard_corridor_m,
+                                           settings.max_hazards, header=header)),
+        ("points of interest", poi_coords,
+         lambda chunk: pois.build_query(chunk, settings)),
+    ):
+        chunks = overpass.chunk_coordinates(points, settings.overpass_max_points)
+        queries = [build(chunk) for chunk in chunks]
+        gaps = [geo.haversine_m(a, b) for a, b in zip(points, points[1:])]
+        print(f"\n{label}")
+        print(f"  {len(points)} query points -> {len(chunks)} chunk(s) of at most "
+              f"{settings.overpass_max_points}")
+        print(f"  widest gap between coordinates: {max(gaps):.0f} m"
+              if gaps else "  single coordinate")
+        print(f"  query size: {max(len(q) for q in queries) / 1024:.1f} KB (largest chunk)")
+
+    print("\nNothing was sent.")
+    return 0
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-corridor", action="store_true",
@@ -338,6 +375,8 @@ async def main() -> int:
     parser.add_argument("--route", default=None,
                         help="GPX/KML to build the queries from "
                              "(default: examples/dolomites_demo.gpx)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Build the queries and print the plan; send nothing")
     args = parser.parse_args()
 
     # Before Settings(), so the deployment's own configuration is what gets
@@ -365,7 +404,10 @@ async def main() -> int:
               f"polygon file(s){RESET}")
     print(f"Checking the services this app needs, using {route_path.name} "
           f"({route.distance_m / 1000:.0f} km, "
-          f"{len(geo.simplify(route.all_latlon, 250))} query points)")
+          f"{len(route.all_latlon)} recorded points)")
+
+    if args.dry_run:
+        return dry_run(settings, route)
 
     failures: list[str] = []
     async with httpx.AsyncClient(headers={"User-Agent": settings.user_agent},
