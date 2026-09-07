@@ -147,11 +147,8 @@ async def find_hazards(
         return cached
 
     try:
-        # Widened by the corridor: a route running along a border searches
-        # ground on the far side of it, so it is not "inside" the coverage
-        # just because every recorded point is.
-        bounds = geo.bounding_box(query_coords, margin_m=settings.hazard_corridor_m)
-        payload = await run_chunked(chunks, build, settings, client, bounds=bounds)
+        payload = await run_chunked(chunks, build, settings, client,
+                                    coverage_points=query_coords)
     except OverpassError as exc:
         log.warning("Overpass closure query failed: %s", exc)
         stale = cache.get_stale(cache_key)

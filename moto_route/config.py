@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
+from typing import Sequence
+
+from . import coverage as coverage_mod
 
 
 def _env_str(name: str, default: str) -> str:
@@ -83,6 +87,11 @@ def _env_bool(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+@lru_cache(maxsize=4)
+def _load_coverage(paths: tuple[str, ...]) -> "coverage_mod.Coverage":
+    return coverage_mod.load(list(paths))
 
 
 @dataclass(slots=True)
@@ -175,6 +184,14 @@ class Settings:
     #: which is true of the public servers.
     overpass_coverage: tuple[float, float, float, float] | None = field(
         default_factory=lambda: _env_bbox("MOTO_OVERPASS_COVERAGE"))
+    #: Geofabrik `.poly` clipping boundaries for the extracts the primary was
+    #: built from — the exact shape of what it holds, rather than a rectangle
+    #: around it. Strongly preferred over the box: the box around Greece and
+    #: Italy also contains Albania, Croatia, Slovenia, Bosnia, Montenegro,
+    #: Serbia, Bulgaria, western Turkey and part of Tunisia, none of which
+    #: would be in the data. Comma-separated paths.
+    overpass_coverage_files: list[str] = field(
+        default_factory=lambda: _env_list("MOTO_OVERPASS_COVERAGE_FILES"))
     overpass_fallback_urls: list[str] = field(default_factory=lambda: _env_list(
         "MOTO_OVERPASS_FALLBACK_URLS",
         ("https://overpass.kumi.systems/api/interpreter",),
@@ -259,7 +276,19 @@ class Settings:
                 endpoints.append(url)
         return endpoints
 
-    def endpoints_for(self, bounds: tuple[float, float, float, float] | None
+    @property
+    def coverage_area(self) -> "coverage_mod.Coverage | None":
+        """The polygons the primary Overpass holds.
+
+        Parsed once per set of files rather than per request: Settings is a
+        frozen slots dataclass with nowhere to memoise, and re-reading a dozen
+        country boundaries on every layer would be absurd.
+        """
+        if not self.overpass_coverage_files:
+            return None
+        return _load_coverage(tuple(self.overpass_coverage_files))
+
+    def endpoints_for(self, points: Sequence[tuple[float, float]] | None
                       ) -> list[str]:
         """The Overpass instances fit to answer about this piece of the world.
 
@@ -273,20 +302,33 @@ class Settings:
         route that lies wholly inside it, and anything crossing the edge goes
         to the public servers instead. Without the setting nothing changes.
 
-        ``bounds`` is (south, west, north, east), or None when the caller does
-        not know, which is treated as "not provably inside".
+        ``points`` are the coordinates about to be searched, or None when the
+        caller does not know — which is treated as "not provably inside".
+
+        Every point is tested, not the route's bounding box: a ride from Italy
+        to Greece has both ends inside the data and its middle in Albania, and
+        a box test would wave it through.
         """
         endpoints = self.overpass_endpoints
-        covers = self.overpass_coverage
-        if not covers or len(endpoints) == 1:
+        if len(endpoints) == 1:
+            # Skipping the only endpoint would turn a gap in the data into no
+            # data at all, which helps nobody.
             return endpoints
 
-        south, west, north, east = covers
-        if bounds is not None:
-            b_south, b_west, b_north, b_east = bounds
-            if (south <= b_south and b_north <= north
-                    and west <= b_west and b_east <= east):
-                return endpoints
+        area = self.coverage_area
+        box = self.overpass_coverage
+        if area is None and box is None:
+            return endpoints                    # public servers cover the world
+
+        if points:
+            if area is not None:
+                if area.contains_all(points):
+                    return endpoints
+            else:
+                south, west, north, east = box
+                if all(south <= lat <= north and west <= lon <= east
+                       for lat, lon in points):
+                    return endpoints
 
         # Outside, straddling, or unknown: skip the local instance entirely
         # rather than let it answer for ground it has never seen.

@@ -508,22 +508,39 @@ curl -s -X POST http://127.0.0.1:12345/api/interpreter \
 
 ```
 MOTO_OVERPASS_URL=http://127.0.0.1:12345/api/interpreter
-MOTO_OVERPASS_COVERAGE=<the box the script printed>
+MOTO_OVERPASS_COVERAGE_FILES=<the list the script printed>
 MOTO_OVERPASS_CONCURRENCY=4
 ```
 
 Keep `MOTO_OVERPASS_FALLBACK_URLS` at its default. Your instance is the
 primary; the public servers stay as the fallback.
 
-`MOTO_OVERPASS_COVERAGE` is the important one, and it is worth understanding
-rather than pasting. An instance built from country extracts does not know what
-it is missing: ask it about a road in Spain and it returns HTTP 200 with an
-empty result, which is indistinguishable from a road with no closures on it.
-The rider is told there is nothing to worry about, by a database that has never
-heard of the road. With the coverage box set, a route that leaves the box is
-sent to the public servers instead — the decision is made once per layer, so a
-route crossing the edge never has half its sections answered by a database that
-only holds the other half.
+`MOTO_OVERPASS_COVERAGE_FILES` is the important one, and it is worth
+understanding rather than pasting. An instance built from country extracts does
+not know what it is missing: ask it about a road in Spain and it returns HTTP
+200 with an empty result, which is indistinguishable from a road with no
+closures on it. The rider is told there is nothing to worry about, by a
+database that has never heard of the road.
+
+**This started as a bounding box and that was wrong.** A box cannot express
+"Greece and Italy but not the countries between them". The rectangle around
+those two also contains Albania, Croatia, Slovenia, Bosnia, Montenegro, Serbia,
+Bulgaria, western Turkey and a strip of Tunisia — eight countries with no data
+behind them, and exactly the ones you ride through going overland from Italy to
+Greece. The box would have sent every one of them to the local server and got
+back a confident "nothing here".
+
+So coverage is the Geofabrik `.poly` clipping polygons instead: the precise
+shape of what was imported, downloaded next to each extract by the build
+script. Every coordinate the layer is about to search is tested against them,
+not the route's bounding box — a ride from Bari to Igoumenitsa has both ends
+inside the data and its middle in Albania, and its bounding box lies entirely
+within the covered rectangles. The decision is made once per layer, so a route
+crossing the edge never has half its sections answered by a database that only
+holds the other half.
+
+`MOTO_OVERPASS_COVERAGE` still exists as a plain box, for a mirror whose
+coverage genuinely is a rectangle. Do not use it for a set of countries.
 
 Raising `MOTO_OVERPASS_CONCURRENCY` is only worth doing once the server is your
 own. On the public servers 2 is the documented per-IP allowance; on your own

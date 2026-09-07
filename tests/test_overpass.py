@@ -598,54 +598,113 @@ async def test_a_wide_semaphore_gives_each_chunk_the_whole_budget():
 
 # ------------------------------------------------- coverage of a local mirror
 
-GREECE = (37.9, 22.4, 39.1, 23.9)
-COVERAGE = "34.0,-5.0,55.5,29.5"          # roughly the touring countries
+# Greece and Italy only, as the build script would produce. Squares, not the
+# real coastlines, but the point of these tests is the *shape* logic.
+GREECE_ITALY_POLY = """greece-italy
+greece
+  20.0  35.0
+  26.5  35.0
+  26.5  41.5
+  20.0  41.5
+END
+italy
+   7.0  37.0
+  18.5  37.0
+  18.5  47.0
+   7.0  47.0
+END
+END
+"""
+
+ATHENS = [(37.98, 23.73), (38.20, 23.60)]
+MILAN = [(45.46, 9.19), (45.30, 9.30)]
+TIRANA = [(41.33, 19.82)]                      # Albania: between the two
+BARI_TO_IGOUMENITSA = [(41.12, 16.87), (41.33, 19.82), (39.50, 20.27)]
 
 
-def _local(monkeypatch, coverage=COVERAGE):
-    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", coverage)
+@pytest.fixture
+def poly_file(tmp_path):
+    path = tmp_path / "coverage.poly"
+    path.write_text(GREECE_ITALY_POLY)
+    return str(path)
+
+
+def _local(monkeypatch, poly_file):
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE_FILES", poly_file)
     return Settings(overpass_url="http://127.0.0.1:12345/api/interpreter",
                     overpass_fallback_urls=["https://overpass-api.de/api/interpreter"])
 
 
-def test_a_route_inside_the_coverage_uses_the_local_instance(monkeypatch):
-    settings = _local(monkeypatch)
-    assert settings.endpoints_for(GREECE)[0].startswith("http://127.0.0.1")
+def _uses_local(settings, points):
+    endpoints = settings.endpoints_for(points)
+    return bool(endpoints) and "127.0.0.1" in endpoints[0]
 
 
-@pytest.mark.parametrize("bounds, why", [
-    ((38.6, -9.3, 38.8, -9.1), "west of the box"),
-    ((59.9, 10.7, 60.1, 10.9), "north of the box"),
-    ((41.0, 26.0, 42.0, 31.0), "straddling the eastern edge"),
-    (None, "bounds unknown"),
-])
-def test_a_route_outside_the_coverage_skips_it(monkeypatch, bounds, why):
-    """The failure this prevents is silence, not an error.
+@pytest.mark.parametrize("points, where", [(ATHENS, "Greece"), (MILAN, "Italy")])
+def test_a_route_inside_the_data_uses_the_local_instance(monkeypatch, poly_file,
+                                                         points, where):
+    assert _uses_local(_local(monkeypatch, poly_file), points), where
 
-    A local instance built from country extracts answers HTTP 200 with zero
-    elements for a country it does not hold — identical to a genuinely clear
-    road. Better to ask a server that knows.
+
+def test_a_country_between_the_two_is_not_covered(monkeypatch, poly_file):
+    """The failure a bounding box could not express.
+
+    Albania sits inside any rectangle drawn around Greece and Italy, and holds
+    none of their data. A box test sends it to the local server, which answers
+    "no closures" about a country it has never heard of.
     """
-    settings = _local(monkeypatch)
-    endpoints = settings.endpoints_for(bounds)
+    assert not _uses_local(_local(monkeypatch, poly_file), TIRANA)
+
+
+def test_a_route_crossing_a_gap_is_not_covered(monkeypatch, poly_file):
+    """Both ends inside the data, the middle in Albania.
+
+    This is why every point is tested rather than the route's bounding box:
+    the box of this ride lies entirely within the covered rectangles.
+    """
+    assert not _uses_local(_local(monkeypatch, poly_file), BARI_TO_IGOUMENITSA)
+
+
+@pytest.mark.parametrize("points, why", [
+    ([(38.72, -9.14)], "Lisbon, west of everything"),
+    ([(59.91, 10.75)], "Oslo, north of everything"),
+    ([(41.01, 28.98)], "Istanbul, east of Greece"),
+    ([(36.81, 10.17)], "Tunis, south of Italy"),
+    (None, "points unknown"),
+])
+def test_a_route_outside_the_data_skips_the_local_instance(monkeypatch, poly_file,
+                                                           points, why):
+    settings = _local(monkeypatch, poly_file)
+    endpoints = settings.endpoints_for(points)
     assert all("127.0.0.1" not in url for url in endpoints), why
     assert endpoints, "something must still be asked"
 
 
 def test_without_coverage_configured_nothing_changes(monkeypatch):
     """The public servers cover the world; the setting is for mirrors."""
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE_FILES", raising=False)
     monkeypatch.delenv("MOTO_OVERPASS_COVERAGE", raising=False)
     settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter")
+    assert settings.endpoints_for(TIRANA) == settings.overpass_endpoints
     assert settings.endpoints_for(None) == settings.overpass_endpoints
-    assert settings.endpoints_for((38.6, -9.3, 38.8, -9.1)) == settings.overpass_endpoints
 
 
-def test_a_local_instance_with_no_fallback_is_still_used(monkeypatch):
+def test_a_local_instance_with_no_fallback_is_still_used(monkeypatch, poly_file):
     """Skipping the only endpoint would turn a gap in the data into no data."""
-    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", COVERAGE)
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE_FILES", poly_file)
     settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter",
                         overpass_fallback_urls=[])
-    assert settings.endpoints_for((59.9, 10.7, 60.1, 10.9)) == settings.overpass_endpoints
+    assert settings.endpoints_for(TIRANA) == settings.overpass_endpoints
+
+
+def test_the_bounding_box_setting_still_works(monkeypatch):
+    """Kept for a mirror whose shape really is a rectangle."""
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE_FILES", raising=False)
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", "34.0,-5.0,55.5,29.5")
+    settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter",
+                        overpass_fallback_urls=["https://overpass-api.de/api/interpreter"])
+    assert _uses_local(settings, ATHENS)
+    assert not _uses_local(settings, [(59.91, 10.75)])
 
 
 @pytest.mark.parametrize("raw", ["1,2,3", "a,b,c,d", "55,-5,34,29.5", "34,29.5,55,-5"])
@@ -656,18 +715,18 @@ def test_a_malformed_coverage_box_is_refused(monkeypatch, raw):
         Settings()
 
 
-async def test_the_layer_asks_only_endpoints_that_cover_the_route(monkeypatch):
+async def test_the_layer_asks_only_endpoints_that_cover_the_route(monkeypatch, poly_file):
     """End to end: the choice reaches the actual requests."""
-    settings = _local(monkeypatch)
+    settings = _local(monkeypatch, poly_file)
     asked: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         asked.append(str(request.url))
         return httpx.Response(200, json={"elements": []})
 
-    chunks = [[(59.9, 10.7)], [(60.0, 10.8)]]       # Oslo: outside the box
+    chunks = [[(41.33, 19.82)], [(41.40, 19.90)]]        # Albania
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await overpass.run_chunked(chunks, lambda c: "q", settings, client,
-                                   bounds=(59.9, 10.7, 60.1, 10.9))
+                                   coverage_points=[p for c in chunks for p in c])
 
     assert asked and all("127.0.0.1" not in url for url in asked)

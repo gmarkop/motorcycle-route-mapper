@@ -285,6 +285,55 @@ Tests keying on call *order* also had to be rewritten to key on query content:
 with chunks running concurrently, "the first three calls" is no longer "the
 first chunk's three attempts".
 
+### Measured: the coverage box was wrong, and only a map showed it
+
+The self-hosted Overpass work shipped with `MOTO_OVERPASS_COVERAGE`, a
+south,west,north,east box saying what the local instance holds. The owner built
+Greece + Italy and the script printed:
+
+    MOTO_OVERPASS_COVERAGE=34.8172847,6.3886568,47.2518146,29.6000483
+
+Those numbers are correct — 34.82 is Gavdos, 47.25 the Italian Alps, 6.39
+western Piedmont, 29.60 Kastellorizo. The box is an accurate box. It is also
+useless, because Greece and Italy are not a rectangle. Checking capitals
+against it:
+
+    Tirana, Zagreb, Ljubljana, Sarajevo, Podgorica, Belgrade, Sofia,
+    Istanbul, Tunis  -> inside the box, absent from the data
+
+Eight countries and a piece of North Africa would have been sent to the local
+server, which answers HTTP 200 with an empty element list for ground it has
+never seen — indistinguishable from a road with no closures. And they are not
+arbitrary countries: Slovenia, Croatia, Bosnia, Montenegro and Albania are
+exactly what you cross riding overland from Italy to Greece.
+
+Coverage is now the Geofabrik `.poly` clipping polygons, downloaded beside each
+extract by `build-extract.sh` and tested with ray casting in
+`moto_route/coverage.py`. They are the exact shape of the import — slightly
+generous, since Geofabrik buffers them past the border, which errs in the safe
+direction.
+
+**Every point is tested, not the bounding box.** A Bari-to-Igoumenitsa ride has
+both ends in the data and its middle in Albania, and its bounding box lies
+entirely inside the covered rectangles. `endpoints_for` therefore takes the
+coordinates the layer is about to search rather than a box, which also removed
+the corridor-margin fudge the box version needed.
+
+The box setting is kept for a mirror whose coverage really is a rectangle, and
+documented as wrong for a set of countries.
+
+**The lesson worth keeping.** Both versions had tests, and the box version's
+tests passed — because they asserted the behaviour of a box, using points
+chosen to be clearly inside or clearly outside it. Nothing in the suite knew
+that the space between Greece and Italy contains Albania. The bug was
+geographic, and only checking the abstraction against the actual world found
+it. When a setting encodes a fact about the physical world, test it against the
+world, not against itself.
+
+Also of note: `Settings` is a `@dataclass(slots=True)`, so `cached_property`
+raises `TypeError: No '__dict__' attribute`. Memoisation there has to be a
+module-level `lru_cache` keyed by the setting's value.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
