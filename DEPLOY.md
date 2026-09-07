@@ -395,6 +395,156 @@ If you use the incidents layer outside Germany, set `MOTO_INCIDENT_FEEDS` in
 
 ---
 
+## Running your own Overpass
+
+Every slow layer in this app is an Overpass query. The public servers answer a
+389 km closure query in 20-40 seconds when they are not refusing it outright,
+and no amount of work in this codebase changes that — the measurements in
+`CLAUDE.md` end with the same conclusion each time. A local instance is the
+only thing that makes those layers fast.
+
+### Read this before you start: it is a RAM problem, not a disk problem
+
+A conventional Overpass covering a dozen European countries wants **8-16 GB of
+RAM**. The project's own Docker image documents 4 GB plus 2 GB of swap as the
+*minimum to complete an installation*, and people report the import being
+killed at 3 GB on an extract as small as Great Britain. Overpass gets its speed
+from having the database in page cache; starve it and it is slower than the
+public servers, not faster.
+
+So on a 2 GB machine, importing thirteen countries the ordinary way will not
+work. Two honest ways forward:
+
+1. **Put more RAM in the box.** It is an old machine if it has 2 GB, and 8 GB of
+   DDR3 costs less than a tank of fuel. Then ignore the rest of this section's
+   cleverness and import the country extracts directly.
+2. **Import only what this app asks for**, which is what
+   `deploy/overpass/build-extract.sh` does, and what the rest of this section
+   describes.
+
+### Why a filtered extract works
+
+This app does not query the map. It queries nine tags:
+
+    fuel, cafe, viewpoint                      (pois.py)
+    highway=construction, construction,
+    access=no, motor_vehicle=no, seasonal,
+    snowplowing, barrier                       (hazards.py)
+
+Everything else in a country extract — every building, address, field boundary
+and power line — is imported, indexed, and never read once. Filtering it out
+first turns roughly 16 GB of country extracts into something small enough that
+the finished database fits in page cache on a modest machine.
+
+**The trade, stated plainly:** the resulting database answers this app's
+questions and no others. Add a layer that needs a new tag and the extract must
+be rebuilt with that tag added to `KEEP` in the script. That is written at the
+top of the script too, so nobody discovers it by getting empty results.
+
+### Build the extract
+
+```bash
+sudo apt install osmium-tool
+sudo mkdir -p /var/lib/overpass-build && sudo chown "$USER" /var/lib/overpass-build
+
+# Prove the pipeline on two countries first — half an hour, not half a day.
+deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
+
+# Then add the rest. Downloads and filtered countries are reused, and the
+# merged extract is rebuilt from everything present, not just the new ones.
+deploy/overpass/build-extract.sh /var/lib/overpass-build
+```
+
+Take the first line seriously. A 17 GB download followed by an import is a long
+way to travel before finding out that a step does not work on your box; two
+small countries exercise every stage of it. Re-run the Docker import and check
+the coverage box after each build, since both change as countries are added.
+
+It downloads each country, filters it, and merges the results. Downloads resume
+if interrupted (`curl -C -`) and countries already filtered are skipped, so it
+is safe to re-run. Budget ~16 GB of downloads and a few hours on a home
+connection; the filtering is I/O-bound and modest on RAM.
+
+It finishes by printing the settings to paste into `/etc/moto-route.env`,
+including the coverage box computed from the data itself.
+
+To change which countries are covered, edit `COUNTRIES` at the top of the
+script — they are Geofabrik paths. (Note that Geofabrik still files North
+Macedonia under `europe/macedonia`.) `--only` takes the bare country names from
+that list, comma-separated, and refuses a name that is not in it: a typo would
+otherwise look exactly like a country that produced no data, which is the
+silent gap this whole design exists to avoid.
+
+### Run Overpass
+
+Docker is much the easiest route on a barebone Debian box:
+
+```bash
+sudo apt install docker.io
+sudo docker run -d --restart unless-stopped \
+  -e OVERPASS_MODE=init \
+  -e OVERPASS_META=no \
+  -e OVERPASS_PLANET_URL=file:///data/touring-europe.osm.pbf \
+  -e OVERPASS_DIFF_URL='' \
+  -e OVERPASS_RULES_LOAD=5 \
+  -v /var/lib/overpass-db:/db \
+  -v /var/lib/overpass-build:/data:ro \
+  -p 127.0.0.1:12345:80 \
+  --name overpass wiktorn/overpass-api
+```
+
+`OVERPASS_META=no` skips version and changeset metadata, which this app never
+reads and which costs both disk and import time. Binding to `127.0.0.1` keeps
+the instance off the network, like the app itself.
+
+Watch the import with `sudo docker logs -f overpass`. When it is serving:
+
+```bash
+curl -s -X POST http://127.0.0.1:12345/api/interpreter \
+  --data-urlencode 'data=[out:json];node(around:2000,37.98,23.73)["amenity"="fuel"];out center 5;'
+```
+
+### Point the app at it
+
+```
+MOTO_OVERPASS_URL=http://127.0.0.1:12345/api/interpreter
+MOTO_OVERPASS_COVERAGE=<the box the script printed>
+MOTO_OVERPASS_CONCURRENCY=4
+```
+
+Keep `MOTO_OVERPASS_FALLBACK_URLS` at its default. Your instance is the
+primary; the public servers stay as the fallback.
+
+`MOTO_OVERPASS_COVERAGE` is the important one, and it is worth understanding
+rather than pasting. An instance built from country extracts does not know what
+it is missing: ask it about a road in Spain and it returns HTTP 200 with an
+empty result, which is indistinguishable from a road with no closures on it.
+The rider is told there is nothing to worry about, by a database that has never
+heard of the road. With the coverage box set, a route that leaves the box is
+sent to the public servers instead — the decision is made once per layer, so a
+route crossing the edge never has half its sections answered by a database that
+only holds the other half.
+
+Raising `MOTO_OVERPASS_CONCURRENCY` is only worth doing once the server is your
+own. On the public servers 2 is the documented per-IP allowance; on your own
+machine the limit is the machine.
+
+### What has actually been tested here
+
+`build-extract.sh` was run end to end against a local stand-in for Geofabrik,
+and the tag filter was verified on a hand-built sample: a `highway=construction`
+way survives with all of its geometry nodes, an `access=no` road survives, a
+building and a bench do not. The coverage box the script prints was fed back
+into the app and confirmed to route an inside route to the local server and an
+outside one to the public servers.
+
+**Not tested:** the real download, the real import, and the Docker recipe —
+this build environment has neither the disk nor the network for a 16 GB
+extract. The osmium commands are verified; the Docker invocation follows the
+image's documented variables but you are the first to run it.
+
+---
+
 ## About the unit file
 
 `deploy/moto-route.service` runs the app as an unprivileged user with most of

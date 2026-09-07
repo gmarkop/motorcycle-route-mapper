@@ -343,6 +343,7 @@ All optional, all environment variables.
 | `MOTO_OVERPASS_DEADLINE` | `120` | Total seconds one layer may spend on Overpass before returning what it has |
 | `MOTO_OVERPASS_QUERY_STYLE` | `filtered` | `filtered` (tag-indexed, 8 passes) or `grouped` (2 passes, large intermediate set) |
 | `MOTO_OVERPASS_FALLBACK_URLS` | one mirror | Other Overpass instances to rotate through; empty disables |
+| `MOTO_OVERPASS_COVERAGE` | unset | `south,west,north,east` your own Overpass holds; routes outside it use the public servers |
 | `MOTO_TANK_RANGE_KM` | `250` | Usable tank range for fuel planning |
 | `MOTO_FUEL_RESERVE` | `0.15` | Fraction of the tank held back as reserve |
 | `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |

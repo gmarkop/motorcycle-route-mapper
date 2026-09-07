@@ -594,3 +594,80 @@ async def test_a_wide_semaphore_gives_each_chunk_the_whole_budget():
 
     # One turn, so each chunk may use the full per-query timeout.
     assert seen[0] == pytest.approx(90 + overpass.TRANSFER_MARGIN_S, abs=1.0)
+
+
+# ------------------------------------------------- coverage of a local mirror
+
+GREECE = (37.9, 22.4, 39.1, 23.9)
+COVERAGE = "34.0,-5.0,55.5,29.5"          # roughly the touring countries
+
+
+def _local(monkeypatch, coverage=COVERAGE):
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", coverage)
+    return Settings(overpass_url="http://127.0.0.1:12345/api/interpreter",
+                    overpass_fallback_urls=["https://overpass-api.de/api/interpreter"])
+
+
+def test_a_route_inside_the_coverage_uses_the_local_instance(monkeypatch):
+    settings = _local(monkeypatch)
+    assert settings.endpoints_for(GREECE)[0].startswith("http://127.0.0.1")
+
+
+@pytest.mark.parametrize("bounds, why", [
+    ((38.6, -9.3, 38.8, -9.1), "west of the box"),
+    ((59.9, 10.7, 60.1, 10.9), "north of the box"),
+    ((41.0, 26.0, 42.0, 31.0), "straddling the eastern edge"),
+    (None, "bounds unknown"),
+])
+def test_a_route_outside_the_coverage_skips_it(monkeypatch, bounds, why):
+    """The failure this prevents is silence, not an error.
+
+    A local instance built from country extracts answers HTTP 200 with zero
+    elements for a country it does not hold — identical to a genuinely clear
+    road. Better to ask a server that knows.
+    """
+    settings = _local(monkeypatch)
+    endpoints = settings.endpoints_for(bounds)
+    assert all("127.0.0.1" not in url for url in endpoints), why
+    assert endpoints, "something must still be asked"
+
+
+def test_without_coverage_configured_nothing_changes(monkeypatch):
+    """The public servers cover the world; the setting is for mirrors."""
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE", raising=False)
+    settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter")
+    assert settings.endpoints_for(None) == settings.overpass_endpoints
+    assert settings.endpoints_for((38.6, -9.3, 38.8, -9.1)) == settings.overpass_endpoints
+
+
+def test_a_local_instance_with_no_fallback_is_still_used(monkeypatch):
+    """Skipping the only endpoint would turn a gap in the data into no data."""
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", COVERAGE)
+    settings = Settings(overpass_url="http://127.0.0.1:12345/api/interpreter",
+                        overpass_fallback_urls=[])
+    assert settings.endpoints_for((59.9, 10.7, 60.1, 10.9)) == settings.overpass_endpoints
+
+
+@pytest.mark.parametrize("raw", ["1,2,3", "a,b,c,d", "55,-5,34,29.5", "34,29.5,55,-5"])
+def test_a_malformed_coverage_box_is_refused(monkeypatch, raw):
+    """A typo that quietly disabled the check would reinstate the bug."""
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", raw)
+    with pytest.raises(ValueError, match="MOTO_OVERPASS_COVERAGE"):
+        Settings()
+
+
+async def test_the_layer_asks_only_endpoints_that_cover_the_route(monkeypatch):
+    """End to end: the choice reaches the actual requests."""
+    settings = _local(monkeypatch)
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return httpx.Response(200, json={"elements": []})
+
+    chunks = [[(59.9, 10.7)], [(60.0, 10.8)]]       # Oslo: outside the box
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await overpass.run_chunked(chunks, lambda c: "q", settings, client,
+                                   bounds=(59.9, 10.7, 60.1, 10.9))
+
+    assert asked and all("127.0.0.1" not in url for url in asked)

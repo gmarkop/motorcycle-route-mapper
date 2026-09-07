@@ -108,6 +108,7 @@ async def run_query(
     attempts: int = 3,
     deadline: float | None = None,
     allowance: float | None = None,
+    endpoints: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """POST an Overpass QL query and return the parsed JSON.
 
@@ -130,7 +131,7 @@ async def run_query(
     Raises :class:`OverpassError` with a message describing what actually
     happened, not the name of a Python class.
     """
-    endpoints = settings.overpass_endpoints
+    endpoints = list(endpoints) if endpoints else settings.overpass_endpoints
     limit = max(1, settings.overpass_concurrency)
     delay = RETRY_BASE_DELAY
     failures: list[str] = []
@@ -276,6 +277,7 @@ async def run_chunked(
     client: httpx.AsyncClient,
     *,
     deadline_s: float | None = None,
+    bounds: tuple[float, float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Run one query per chunk, concurrently, and merge the results.
 
@@ -310,9 +312,14 @@ async def run_chunked(
     rounds = math.ceil(len(chunks) / max(1, settings.overpass_concurrency))
     allowance = max(MIN_ATTEMPT_S, budget / rounds) if budget else None
 
+    # Decided once for the layer, not per chunk: a route that leaves a
+    # self-hosted instance's coverage must not have half its chunks answered
+    # from a database that has never heard of the other half.
+    endpoints = settings.endpoints_for(bounds)
+
     results = await asyncio.gather(
-        *(run_query(build(chunk), settings, client,
-                    deadline=deadline, allowance=allowance)
+        *(run_query(build(chunk), settings, client, deadline=deadline,
+                    allowance=allowance, endpoints=endpoints)
           for chunk in chunks),
         return_exceptions=True,
     )
