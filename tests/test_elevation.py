@@ -181,3 +181,74 @@ async def test_offline_mode_never_reaches_for_the_model(tmp_path, cache, climb):
 
     assert result["available"] is False
     assert "offline" in result["reason"].lower()
+
+
+# ------------------------------------------------- gradient onto other samples
+
+def test_gradient_is_interpolated_between_profile_samples():
+    profile = [{"distance_m": 0, "gradient_pct": 0.0},
+               {"distance_m": 1000, "gradient_pct": 10.0}]
+    assert elevation.gradient_at(profile, [0, 250, 500, 1000]) == [0.0, 2.5, 5.0, 10.0]
+
+
+def test_gradient_beyond_the_profile_holds_at_the_ends():
+    profile = [{"distance_m": 100, "gradient_pct": 4.0},
+               {"distance_m": 200, "gradient_pct": 8.0}]
+    assert elevation.gradient_at(profile, [0, 500]) == [4.0, 8.0]
+
+
+def test_gradient_without_a_profile_is_flat_not_a_crash():
+    assert elevation.gradient_at([], [0, 100, 200]) == [0.0, 0.0, 0.0]
+
+
+# ------------------------------------------------------- demanding stretches
+
+def _samples(rows):
+    return [{"distance_m": d, "curviness": c, "gradient_pct": g} for d, c, g in rows]
+
+
+def test_twisty_and_steep_together_is_flagged(settings):
+    rows = [(i * 100, 200.0, -8.0) for i in range(11)]      # 1 km of both
+    found = elevation.demanding_stretches(_samples(rows), settings)
+
+    assert len(found) == 1
+    assert found[0]["from_m"] == 0 and found[0]["to_m"] == 1000
+    assert found[0]["descending"] is True
+    assert found[0]["gradient_pct"] == -8.0
+
+
+def test_twisty_but_flat_is_not_flagged(settings):
+    rows = [(i * 100, 250.0, 0.5) for i in range(11)]
+    assert elevation.demanding_stretches(_samples(rows), settings) == []
+
+
+def test_steep_but_straight_is_not_flagged(settings):
+    rows = [(i * 100, 10.0, -12.0) for i in range(11)]
+    assert elevation.demanding_stretches(_samples(rows), settings) == []
+
+
+def test_a_brief_blip_is_not_a_warning(settings):
+    """One sample on a bridge should not become an advisory."""
+    rows = [(0, 10.0, 0.0), (100, 250.0, -9.0), (200, 10.0, 0.0)]
+    assert elevation.demanding_stretches(_samples(rows), settings) == []
+
+
+def test_separate_stretches_stay_separate(settings):
+    rows = ([(i * 100, 200.0, -8.0) for i in range(0, 11)]
+            + [(i * 100, 20.0, 0.0) for i in range(11, 30)]
+            + [(i * 100, 240.0, 7.0) for i in range(30, 41)])
+    found = elevation.demanding_stretches(_samples(rows), settings)
+
+    assert len(found) == 2
+    assert found[0]["descending"] is True
+    assert found[1]["descending"] is False
+
+
+def test_a_stretch_is_described_by_its_worst_moment_not_its_mean(settings):
+    """A run that peaks at 11% is an 11% run; averaging hides the hard part."""
+    rows = [(0, 200.0, -5.0), (100, 200.0, -11.0), (200, 200.0, -5.0),
+            (300, 200.0, -5.0), (400, 200.0, -6.0)]
+    found = elevation.demanding_stretches(_samples(rows), settings)
+
+    assert len(found) == 1
+    assert found[0]["gradient_pct"] == -11.0

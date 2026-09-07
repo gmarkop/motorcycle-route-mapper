@@ -80,6 +80,28 @@ def run(url: str, chromium: str | None) -> list[str]:
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_timeout(1200)
 
+        # 0. Twisty-and-steep stretches reach the panel.
+        #
+        # The whole chain is server-side except this last step, so a working
+        # endpoint and an empty panel look identical from pytest.
+        load_route(page, DEMO)
+        page.wait_for_selector("#demanding-list li", timeout=45000)
+        demanding = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#demanding-list li')];
+            return {
+                count: rows.length,
+                first: rows.length ? rows[0].innerText.replace(/\\n/g, ' ') : '',
+                note: document.getElementById('demanding-note').innerText,
+                hidden: document.getElementById('demanding-panel').hidden,
+            };
+        }""")
+        check(failures, demanding["count"] > 0,
+              "demanding stretches: the panel lists none")
+        check(failures, not demanding["hidden"],
+              "demanding stretches: the panel stayed hidden")
+        check(failures, "%" in demanding["first"],
+              f"demanding stretches: no gradient in {demanding['first']!r}")
+
         # 1. A loaded ride is written to IndexedDB, file bytes and all.
         load_route(page, DEMO)
         online = snapshot(page)

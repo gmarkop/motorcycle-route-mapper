@@ -362,6 +362,9 @@ All optional, all environment variables.
 | `MOTO_ELEVATION_TTL` | `2592000` | Elevation cache lifetime, seconds — terrain does not move |
 | `MOTO_ELEVATION_SAMPLE_M` | `250` | Spacing of elevation samples along the route |
 | `MOTO_MAX_ELEVATION_SAMPLES` | `600` | Cap on samples, and so on requests (100 coordinates each) |
+| `MOTO_DEMANDING_CURVINESS` | `130` | deg/km at which a stretch counts as twisty |
+| `MOTO_DEMANDING_GRADIENT` | `5` | Percent gradient at which a stretch counts as steep |
+| `MOTO_DEMANDING_MIN_M` | `300` | How long twisty-and-steep must hold to be worth flagging |
 | `MOTO_PARTIAL_TTL` | `300` | Cache lifetime for an answer missing sections, so Refresh retries them |
 | `MOTO_MAX_HAZARDS` | `200` | Cap on OSM closures returned |
 | `MOTO_MAX_POIS` | `300` | Cap on fuel/cafe/viewpoint results |

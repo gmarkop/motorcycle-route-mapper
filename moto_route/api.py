@@ -208,19 +208,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"available": False, "reason": "Route is too short to measure.",
                     "samples": []}
 
+        # Gradient turns a corner into a different corner. A 180 on the flat and
+        # the same 180 on a 9% descent are not the same piece of riding, and
+        # curvature alone cannot tell them apart.
+        heights = await elevation_service.profile(
+            points, [p.ele for p in route.iter_points()], settings,
+            app.state.http, app.state.elevation_cache)
+        slopes = elevation_service.gradient_at(
+            heights.get("samples", []), [distance for _, distance, _ in profile])
+
+        samples = [
+            {
+                "lat": round(points[index][0], 6),
+                "lon": round(points[index][1], 6),
+                "distance_m": round(distance),
+                "curviness": round(value, 1),
+                "gradient_pct": slope,
+            }
+            for (index, distance, value), slope in zip(profile, slopes)
+        ]
+
         return {
             "available": True,
             "overall": round(geo.curviness_deg_per_km(points), 1),
             "window_m": window_m,
-            "samples": [
-                {
-                    "lat": round(points[index][0], 6),
-                    "lon": round(points[index][1], 6),
-                    "distance_m": round(distance),
-                    "curviness": round(value, 1),
-                }
-                for index, distance, value in profile
-            ],
+            "elevation": {"available": bool(heights.get("available")),
+                          "source": heights.get("source"),
+                          "reason": heights.get("reason")},
+            "demanding": (elevation_service.demanding_stretches(samples, settings)
+                          if heights.get("available") else []),
+            "samples": samples,
         }
 
     @app.get("/api/routes/{route_id}/export.gpx")

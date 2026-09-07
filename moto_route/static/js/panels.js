@@ -296,4 +296,50 @@ export function showCurviness(payload) {
 
   const bar = document.querySelector('#curviness-legend .legend-bar');
   if (bar) bar.style.background = curvinessGradient();
+
+  showDemanding(payload);
 }
+
+/**
+ * Stretches that are twisty *and* steep.
+ *
+ * Listed rather than folded into the heat map's colour, because they are two
+ * different facts and blending them into one shade would say "hard here"
+ * without saying why. Gear choice and braking depend on which it is, and on
+ * whether the corners are on the way up or the way down.
+ */
+function showDemanding(payload) {
+  const panel = $('demanding-panel');
+  const list = $('demanding-list');
+  const note = $('demanding-note');
+  const elevation = payload.elevation || {};
+  const stretches = payload.demanding || [];
+
+  if (!elevation.available) {
+    // Say why rather than hiding the panel: "no steep corners on this route"
+    // and "nobody checked" look identical when the answer is an empty list.
+    panel.hidden = false;
+    note.textContent = elevation.reason
+      || 'Heights are unavailable, so gradient could not be checked.';
+    list.innerHTML = '';
+    return;
+  }
+
+  panel.hidden = false;
+  note.textContent = stretches.length
+    ? (elevation.source === 'dem'
+        ? 'Twisty and steep together. Heights from the terrain model.'
+        : 'Twisty and steep together. Heights from your GPX file.')
+    : 'Nothing on this route is both twisty and steep.';
+
+  list.innerHTML = stretches.map((s) => {
+    const slope = Math.abs(s.gradient_pct).toFixed(1);
+    const way = s.descending ? 'descent' : 'climb';
+    return `<li>
+      <strong>${km(s.from_m)}–${km(s.to_m)}</strong>
+      <span class="muted"> · ${Math.round(s.length_m)} m</span>
+      <div class="tiny">${esc(curvinessLabel(s.curviness))} on a ${slope}% ${way}</div>
+    </li>`;
+  }).join('');
+}
+

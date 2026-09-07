@@ -172,3 +172,82 @@ async def profile(
             for (distance, height), slope in zip(pairs, slopes)
         ],
     }
+
+
+def gradient_at(
+    samples: Sequence[dict[str, Any]],
+    distances: Sequence[float],
+) -> list[float]:
+    """Interpolate gradient from an elevation profile onto other distances.
+
+    The curviness profile and the elevation profile are sampled independently —
+    one follows the shape of the road, the other a fixed spacing — so their
+    points do not line up. Interpolating beats snapping to the nearest: a
+    gradient is a property of a stretch of road, not of a point on it.
+    """
+    if not samples:
+        return [0.0] * len(distances)
+
+    marks = [(float(s["distance_m"]), float(s["gradient_pct"])) for s in samples]
+    out: list[float] = []
+    j = 0
+    for distance in distances:
+        while j + 2 < len(marks) and marks[j + 1][0] < distance:
+            j += 1
+        left, right = marks[j], marks[min(j + 1, len(marks) - 1)]
+        span = right[0] - left[0]
+        if span <= 0:
+            out.append(left[1])
+        else:
+            t = min(max((distance - left[0]) / span, 0.0), 1.0)
+            out.append(round(left[1] + (right[1] - left[1]) * t, 1))
+    return out
+
+
+def demanding_stretches(
+    samples: Sequence[dict[str, Any]],
+    settings: Settings,
+) -> list[dict[str, Any]]:
+    """Runs of road that are both twisty and steep.
+
+    Deliberately not a blended "difficulty score". A single number that mixes
+    curvature and gradient looks authoritative and hides which of the two drove
+    it, and the rider cannot act on it. What is worth knowing is the
+    combination itself — that the switchbacks at km 34 are on the way *down* —
+    because that is what changes gear choice, braking and how early you slow.
+
+    A stretch has to hold for ``demanding_min_m`` to count, so a single noisy
+    sample on a bridge does not become a warning.
+    """
+    runs: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+
+    def close(run: list[dict[str, Any]]) -> None:
+        if not run:
+            return
+        length = run[-1]["distance_m"] - run[0]["distance_m"]
+        if length < settings.demanding_min_m:
+            return
+        # The worst values in the run describe it better than the mean: what
+        # matters is the hardest moment, not the average of a hard stretch.
+        peak_curve = max(r["curviness"] for r in run)
+        peak_slope = max((r["gradient_pct"] for r in run), key=abs)
+        runs.append({
+            "from_m": round(run[0]["distance_m"]),
+            "to_m": round(run[-1]["distance_m"]),
+            "length_m": round(length),
+            "curviness": round(peak_curve, 1),
+            "gradient_pct": peak_slope,
+            "descending": peak_slope < 0,
+        })
+
+    for sample in samples:
+        steep = abs(sample.get("gradient_pct") or 0.0) >= settings.demanding_gradient_pct
+        twisty = (sample.get("curviness") or 0.0) >= settings.demanding_curviness
+        if steep and twisty:
+            current.append(sample)
+        else:
+            close(current)
+            current = []
+    close(current)
+    return runs
