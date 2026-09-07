@@ -542,6 +542,23 @@ holds the other half.
 `MOTO_OVERPASS_COVERAGE` still exists as a plain box, for a mirror whose
 coverage genuinely is a rectangle. Do not use it for a set of countries.
 
+### Check the coverage before trusting it
+
+```bash
+python tools/check_coverage.py                        # reads /etc/moto-route.env
+python tools/check_coverage.py --route ~/my-tour.gpx  # and one of your rides
+```
+
+It loads the polygons and prints which side of the boundary a list of European
+cities falls on. With Greece and Italy built, Athens, Rome and Palermo should
+read `LOCAL`, and **Tirana, Podgorica, Sarajevo, Zagreb and Ljubljana must read
+`public`** — those are the countries an overland Italy-to-Greece ride crosses,
+and if any of them says `LOCAL` the polygons do not match the data and the
+closure layer will report clear roads it knows nothing about.
+
+With `--route` it tests every point of one of your own rides and says which
+servers it will use, which is the question you actually care about.
+
 Raising `MOTO_OVERPASS_CONCURRENCY` is only worth doing once the server is your
 own. On the public servers 2 is the documented per-IP allowance; on your own
 machine the limit is the machine.
