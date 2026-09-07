@@ -31,8 +31,6 @@ from .overpass import (OverpassError, chunk_coordinates, query_header,
 
 log = logging.getLogger(__name__)
 
-_QUERY_SIMPLIFY_M = 250.0
-_MAX_QUERY_POINTS = 350
 
 
 @dataclass(slots=True)
@@ -115,7 +113,7 @@ async def find_pois(
     if settings.offline:
         return {"available": False, "reason": "Offline mode is enabled.", "pois": []}
 
-    chunks = chunk_coordinates(_query_coordinates(route_points),
+    chunks = chunk_coordinates(_query_coordinates(route_points, settings),
                                settings.overpass_max_points)
 
     def build(chunk):
@@ -126,7 +124,7 @@ async def find_pois(
     if cached is None:
         try:
             cached = await run_chunked(chunks, build, settings, client,
-                                       coverage_points=_query_coordinates(route_points))
+                                       coverage_points=_query_coordinates(route_points, settings))
         except OverpassError as exc:
             log.warning("Overpass POI query failed: %s", exc)
             stale = cache.get_stale(cache_key)
@@ -238,15 +236,20 @@ def plan_fuel_stops(
     return plan
 
 
-def _query_coordinates(route_points: Sequence[geo.LatLon]) -> list[geo.LatLon]:
-    simplified = geo.simplify(route_points, _QUERY_SIMPLIFY_M)
-    if len(simplified) <= _MAX_QUERY_POINTS:
-        return simplified
-    step = len(simplified) / _MAX_QUERY_POINTS
-    picked = [simplified[int(i * step)] for i in range(_MAX_QUERY_POINTS)]
-    if picked[-1] != simplified[-1]:
-        picked.append(simplified[-1])
-    return picked
+def _query_coordinates(route_points: Sequence[geo.LatLon],
+                      settings: Settings) -> list[geo.LatLon]:
+    """Coordinates whose corridor actually covers the route.
+
+    Spaced from the widest corridor this layer searches, which is fuel's
+    kilometre — so this stays about as cheap as the fixed thinning it replaces,
+    while the closure layer's 150 m corridor now costs many more coordinates.
+    That difference is the point: the spacing a corridor needs depends on how
+    wide the corridor is, and a single fixed thinning could not be right for
+    both.
+    """
+    widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
+                 settings.viewpoint_corridor_m)
+    return geo.corridor_points(route_points, widest)
 
 
 def _elements_to_pois(

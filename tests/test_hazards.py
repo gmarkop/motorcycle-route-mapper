@@ -5,6 +5,7 @@ import urllib.parse
 import httpx
 import pytest
 
+from moto_route import geo
 from moto_route.config import Settings
 from moto_route.models import GeoPoint, Route
 from moto_route.services import hazards, overpass
@@ -89,13 +90,35 @@ def test_query_covers_construction_gates_and_access_restrictions():
     assert "out geom" in query
 
 
-def test_long_routes_are_thinned_before_querying():
-    # 5000 points would make an Overpass URL absurdly long.
-    dense = [(48.0 + i * 0.0002, 11.0) for i in range(5000)]
-    coords = hazards._query_coordinates(dense)
+def test_long_routes_are_thinned_but_never_beyond_the_corridor(settings):
+    """Thinning has to stop where coverage would.
 
-    assert len(coords) <= hazards._MAX_QUERY_POINTS
+    The old rule was a fixed 250 m tolerance capped at 350 points. On a 389 km
+    route that put coordinates 1.1 km apart inside a 150 m corridor, so most of
+    the road was never searched and nothing said so. Thinning is still wanted —
+    5000 coordinates make an absurd query — but only down to what the corridor
+    can still cover.
+    """
+    dense = [(48.0 + i * 0.0002, 11.0) for i in range(5000)]
+    coords = hazards._query_coordinates(dense, settings)
+
+    assert len(coords) < len(dense), "still thinned"
     assert coords[0] == dense[0]
+
+    gaps = [geo.haversine_m(a, b) for a, b in zip(coords, coords[1:])]
+    assert max(gaps) <= settings.hazard_corridor_m * 2, (
+        f"{max(gaps):.0f} m apart in a {settings.hazard_corridor_m:.0f} m "
+        "corridor: the circles do not touch and the road between is unsearched")
+
+
+def test_a_wider_corridor_needs_fewer_coordinates(settings):
+    """The spacing follows the corridor, which is why one fixed rule could not
+    serve both the 150 m closure search and the 1 km fuel search."""
+    route = [(48.0 + i * 0.0002, 11.0) for i in range(5000)]
+    tight = geo.corridor_points(route, 150.0)
+    wide = geo.corridor_points(route, 1000.0)
+
+    assert len(wide) < len(tight)
 
 
 # ------------------------------------------------------------ result handling
@@ -216,9 +239,13 @@ async def test_results_are_cached_between_calls(route, settings, cache):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await hazards.find_hazards(route, settings, client, cache)
+        first_round = calls["n"]
         await hazards.find_hazards(route, settings, client, cache)
 
-    assert calls["n"] == 1
+    assert first_round >= 1
+    # The count, not the number one: a route long enough to chunk makes several
+    # calls the first time round, and what matters is that the second makes none.
+    assert calls["n"] == first_round
 
 
 async def test_a_partial_answer_is_cached_only_briefly(monkeypatch, route, settings, cache):

@@ -334,6 +334,62 @@ Also of note: `Settings` is a `@dataclass(slots=True)`, so `cached_property`
 raises `TypeError: No '__dict__' attribute`. Memoisation there has to be a
 module-level `lru_cache` keyed by the setting's value.
 
+### Answered at last: the corridor had a hole, and it was arithmetic
+
+The `around:` question has been open since the beginning. The owner's Debian
+box finally ran the probe on a 389 km Greek route:
+
+    highways found with dense coordinates: 86
+    highways found with only the two ends: 36
+    FAIL  `around:` searches the points, not the line — only 42% found
+
+**That verdict was not safe to trust, and the probe has been fixed.** It took a
+stretch from the middle of the route, which on a mountain road is curvy — and
+on a curvy road *both* candidate readings collapse. "Circles around each
+coordinate" and "a corridor along the straight chords between them" lose the
+road equally when the coordinates are thinned, so the experiment could not tell
+them apart. It now searches for the *straightest* 8 km stretch on the route,
+where the two readings predict the same corridor and a collapse can only mean
+circles, and warns when no straight enough stretch exists.
+
+**But the real bug needed no probe at all.** The constants decided it:
+
+    corridor radius     150 m   (hazard_corridor_m)
+    simplify tolerance  250 m   (_QUERY_SIMPLIFY_M)
+
+Douglas-Peucker guarantees only that the road lies within the tolerance of the
+thinned line. A 250 m tolerance inside a 150 m corridor therefore leaves up to
+100 m of real road outside the searched corridor on every curve it cut — under
+the *favourable* reading. Under the other, `_MAX_QUERY_POINTS = 350` spread
+over 389 km puts coordinates 1.1 km apart, nearly four times too far for 150 m
+circles to touch.
+
+Either way the closure layer had not been searching most of a long route, and
+said nothing: the panel showed what it found, with no error and no note.
+
+`geo.corridor_points(points, radius_m)` replaces both fixed constants. It
+simplifies to half the radius (bounding how far the road can stray from the
+line) and then interpolates so no gap exceeds 1.5x the radius (so circles
+overlap). Satisfying both costs no more than the stricter one, so the open
+question stops mattering.
+
+Order matters, and the first attempt had it backwards: densify-then-simplify
+keeps every point of a 1 Hz track log on a straight road — 100 recorded points
+where 50 are needed. Simplify first, then fill the gaps thinning left.
+
+`sample_every` cannot be used for the filling: it returns only coordinates the
+route already has, so a GPX with points 2 km apart still yields 2 km gaps.
+`_interpolate_along` adds points on the segments instead.
+
+**The cost is real and lands almost entirely on closures.** Spacing follows the
+corridor, so the 1 km fuel corridor barely changes while the 150 m closure
+corridor goes from 3 chunks to roughly 30 on the Pavliani route. That is the
+honest price of searching the road instead of a tenth of it, and it is a strong
+argument for the self-hosted Overpass: 30 chunks locally is seconds, on the
+public servers it is not affordable. Long routes against public Overpass will
+now report partial results — which is not new breakage but the pre-existing gap
+finally becoming visible.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
