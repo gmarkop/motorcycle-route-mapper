@@ -8,11 +8,46 @@ Owner: gmarkop. Repo: `gmarkop/motorcycle-route-mapper` (**private**).
 
 ---
 
-## Where things stand (3 September 2026)
+## Where things stand (8 September 2026)
 
-`main` carries everything: the original app, the five touring features, and now
-offline route persistence. The old `claude/touring-features` branch is merged
-and deleted, as is the abandoned branch that once lived in the ELAN repo.
+`main` carries the app, the five touring features, offline route persistence,
+and the whole self-hosted Overpass chapter. The owner runs it on a 2 GB Debian
+box behind Tailscale.
+
+### The self-hosted Overpass is live and is the headline result
+
+A tag-filtered Greece + Italy extract — 25 MB from ~2.3 GB of country data —
+imported into `wiktorn/overpass-api` and reachable at `127.0.0.1:12345`.
+Measured on the 389 km Pavliani route:
+
+| | closures | points of interest |
+| --- | --- | --- |
+| own server | **10.6 s, 43 found** | 4.5 s, 187 found |
+| overpass-api.de | 42.4 s, 27 found, a chunk lost | 49.4 s |
+| overpass.kumi.systems | 20 of 32 chunks lost, 21 found | 81.4 s |
+
+**Failing chunks on the public mirrors are the expected result, not a fault.**
+Every endpoint is measured in turn so the fallback's behaviour is known; a
+Greek or Italian route never reaches them. Do not go looking for a bug there.
+
+### Immediately next, both unblocked
+
+1. **POI categories** — motorcycle shops (`shop=motorcycle`,
+   `shop=motorcycle_repair`), `amenity=motorcycle_parking` as a ranking signal,
+   and accommodation. `motorcycle_friendly=yes` is a dead tag (the OSM wiki
+   calls it "rarely tagged and not used by any real data consumer"), so the
+   plan is to *add categories* rather than filter cafes. Counts were guesswork
+   before; the local server makes them measurable in seconds. **Note the
+   extract only holds the nine tags in `KEEP`** — new categories mean editing
+   `build-extract.sh` and rebuilding.
+2. **`claude/elevation-from-dem` is written but unmerged.** Independent of all
+   the Overpass work. Fills heights from Copernicus GLO-90 when a GPX carries
+   none — which is every file the owner's converter produces, so the elevation
+   profile is currently blank for his own routes — and flags stretches that are
+   twisty *and* steep.
+
+Also unspent: the app itself has not been opened since the corridor fix landed.
+Worth doing before anything else, since it is the thing actually used.
 
 ### Open admin items
 
