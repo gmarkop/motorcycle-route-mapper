@@ -260,7 +260,23 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
                 return int(element.get("tags", {}).get("total", 0))
         return None
 
-    single = Settings(overpass_url=settings.overpass_endpoints[0],
+    # Asked of a server with the whole map, which a self-hosted instance built
+    # by build-extract.sh is not: it holds highway=construction and the handful
+    # of other tags this app queries, so `way(...)["highway"]` finds nothing
+    # there and both counts come back zero. The question is about what
+    # `around:` means, which is a property of the Overpass software and the
+    # same everywhere, so any full instance answers it.
+    full_data = next((url for url in settings.overpass_endpoints
+                      if not overpass._is_local(url)), None)
+    if full_data is None:
+        line("warn", "no full-data server configured",
+             "a filtered local extract cannot answer this")
+        return
+    if full_data != settings.overpass_endpoints[0]:
+        print(f"    asking {overpass._host(full_data)}, since a filtered local "
+              f"extract has no plain highways to count")
+
+    single = Settings(overpass_url=full_data,
                       overpass_fallback_urls=[], overpass_concurrency=1)
 
     dense_payload, exc, _ = await timed(overpass.run_query(counting_query(dense), single, client, attempts=1))
@@ -286,7 +302,9 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
     print(f"    highways found with only the two ends: {sparse_total}")
 
     if dense_total == 0:
-        line("warn", "no highways found either way", "inconclusive on this route")
+        line("warn", "no highways found either way",
+             "the server has no plain highway data here — a tag-filtered "
+             "extract cannot answer this")
     elif sparse_total >= dense_total * 0.8:
         line("ok", "`around:` follows the line between coordinates",
              "spacing is safe; the thinning tolerance still has to be "

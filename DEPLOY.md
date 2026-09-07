@@ -459,6 +459,14 @@ questions and no others. Add a layer that needs a new tag and the extract must
 be rebuilt with that tag added to `KEEP` in the script. That is written at the
 top of the script too, so nobody discovers it by getting empty results.
 
+It bites the diagnostics first. `check_services.py`'s corridor probe counts
+plain `["highway"]` ways, which a filtered extract does not hold, so against a
+local instance it found zero either way and could say nothing. It now asks a
+full-data server for that one question — `around:` semantics are a property of
+the Overpass software, identical in every instance — and says so in its output.
+Expect the same of any question you ask this database that the app itself would
+never ask.
+
 ### Build the extract
 
 ```bash
