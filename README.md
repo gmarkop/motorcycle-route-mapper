@@ -358,6 +358,10 @@ All optional, all environment variables.
 | `MOTO_MAX_AUTOBAHN_ROADS` | `8` | Cap on motorways queried per route |
 | `MOTO_MAX_INCIDENTS` | `150` | Cap on incidents returned |
 | `MOTO_INCIDENT_TTL` | `600` | Incident cache lifetime, seconds |
+| `MOTO_ELEVATION_URL` | Open-Meteo | Terrain model used when the GPX carries no heights |
+| `MOTO_ELEVATION_TTL` | `2592000` | Elevation cache lifetime, seconds — terrain does not move |
+| `MOTO_ELEVATION_SAMPLE_M` | `250` | Spacing of elevation samples along the route |
+| `MOTO_MAX_ELEVATION_SAMPLES` | `600` | Cap on samples, and so on requests (100 coordinates each) |
 | `MOTO_PARTIAL_TTL` | `300` | Cache lifetime for an answer missing sections, so Refresh retries them |
 | `MOTO_MAX_HAZARDS` | `200` | Cap on OSM closures returned |
 | `MOTO_MAX_POIS` | `300` | Cap on fuel/cafe/viewpoint results |

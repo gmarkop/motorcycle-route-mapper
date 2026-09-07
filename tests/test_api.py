@@ -147,13 +147,21 @@ def test_elevation_profile_is_served_when_the_file_has_altitudes(client, read_fi
     payload = client.get(f"/api/routes/{upload['id']}/elevation").json()
 
     assert payload["available"] is True
+    assert payload["source"] == "file", "the file's own heights beat the model"
     assert len(payload["samples"]) == 6
-    assert payload["samples"][0] == {"distance_m": 0, "ele": 500.0}
+    first = payload["samples"][0]
+    assert first["distance_m"] == 0 and first["ele"] == 500.0
+    assert "gradient_pct" in first
     distances = [s["distance_m"] for s in payload["samples"]]
     assert distances == sorted(distances)
 
 
-def test_elevation_reports_unavailable_without_altitude_data(client):
+def test_elevation_offline_says_why_it_cannot_fill_the_gap(client):
+    """Offline mode must not reach for the terrain model, and must say so.
+
+    The `client` fixture runs the app with offline=True, so this also guards
+    against the elevation lookup quietly making network calls in the suite.
+    """
     flat = b"""<?xml version="1.0"?>
     <gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1"><trk><trkseg>
       <trkpt lat="48.0" lon="11.0"/><trkpt lat="48.1" lon="11.1"/>
@@ -163,7 +171,7 @@ def test_elevation_reports_unavailable_without_altitude_data(client):
     payload = client.get(f"/api/routes/{upload['id']}/elevation").json()
 
     assert payload["available"] is False
-    assert "no elevation" in payload["reason"].lower()
+    assert "offline" in payload["reason"].lower()
 
 
 # ----------------------------------------------------------------- route store
