@@ -446,8 +446,19 @@ top of the script too, so nobody discovers it by getting empty results.
 ```bash
 sudo apt install osmium-tool
 sudo mkdir -p /var/lib/overpass-build && sudo chown "$USER" /var/lib/overpass-build
+
+# Prove the pipeline on two countries first — half an hour, not half a day.
+deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
+
+# Then add the rest. Downloads and filtered countries are reused, and the
+# merged extract is rebuilt from everything present, not just the new ones.
 deploy/overpass/build-extract.sh /var/lib/overpass-build
 ```
+
+Take the first line seriously. A 17 GB download followed by an import is a long
+way to travel before finding out that a step does not work on your box; two
+small countries exercise every stage of it. Re-run the Docker import and check
+the coverage box after each build, since both change as countries are added.
 
 It downloads each country, filters it, and merges the results. Downloads resume
 if interrupted (`curl -C -`) and countries already filtered are skipped, so it
@@ -459,7 +470,10 @@ including the coverage box computed from the data itself.
 
 To change which countries are covered, edit `COUNTRIES` at the top of the
 script — they are Geofabrik paths. (Note that Geofabrik still files North
-Macedonia under `europe/macedonia`.)
+Macedonia under `europe/macedonia`.) `--only` takes the bare country names from
+that list, comma-separated, and refuses a name that is not in it: a typo would
+otherwise look exactly like a country that produced no data, which is the
+silent gap this whole design exists to avoid.
 
 ### Run Overpass
 

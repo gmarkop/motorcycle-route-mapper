@@ -17,10 +17,25 @@
 # that tag added to KEEP below. That is the trade, and it is written down here
 # so the next person does not discover it by getting empty results.
 #
-# Usage:  deploy/overpass/build-extract.sh [workdir]
+# Usage:
+#   deploy/overpass/build-extract.sh [workdir]
+#   deploy/overpass/build-extract.sh --only greece,italy [workdir]
+#
+# --only restricts the build to the named countries. Use it to prove the whole
+# pipeline on two small ones before committing to a 17 GB download; re-running
+# later with more countries reuses everything already downloaded and filtered,
+# and rebuilds the merged extract from all of them.
+#
 # Needs:  osmium-tool  (sudo apt install osmium-tool), curl, ~40 GB free.
 
 set -euo pipefail
+
+ONLY=""
+if [ "${1:-}" = "--only" ]; then
+  [ $# -ge 2 ] || { echo "--only needs a comma-separated list of countries" >&2; exit 1; }
+  ONLY="$2"
+  shift 2
+fi
 
 WORK="${1:-/var/lib/overpass-build}"
 REGION_BASE="https://download.geofabrik.de"
@@ -67,6 +82,28 @@ KEEP=(
 command -v osmium >/dev/null || { echo "osmium not found: sudo apt install osmium-tool" >&2; exit 1; }
 mkdir -p "$WORK/raw" "$WORK/filtered"
 
+# Narrow the list if --only was given, and refuse a name that is not in it --
+# a typo would otherwise look like a country that simply produced no data,
+# which is exactly the kind of silent gap this whole design is trying to avoid.
+if [ -n "$ONLY" ]; then
+  selected=()
+  IFS=',' read -ra wanted <<< "$ONLY"
+  for want in "${wanted[@]}"; do
+    want="$(echo "$want" | tr -d ' ')"
+    [ -z "$want" ] && continue
+    found=""
+    for path in "${COUNTRIES[@]}"; do
+      [ "${path##*/}" = "$want" ] && { selected+=("$path"); found=1; break; }
+    done
+    [ -n "$found" ] || {
+      echo "Unknown country '$want'. Known: $(printf '%s ' "${COUNTRIES[@]##*/}")" >&2
+      exit 1
+    }
+  done
+  COUNTRIES=("${selected[@]}")
+  echo "==> Building for ${#COUNTRIES[@]} of the configured countries: $ONLY"
+fi
+
 echo "==> Downloading ${#COUNTRIES[@]} country extracts into $WORK/raw"
 for path in "${COUNTRIES[@]}"; do
   name="${path##*/}"
@@ -98,7 +135,10 @@ for path in "${COUNTRIES[@]}"; do
 done
 
 echo "==> Merging into one extract"
+# Everything filtered so far, not just this run's countries: adding a country
+# later should extend the extract rather than replace it with only the new one.
 osmium merge --overwrite -o "$WORK/touring-europe.osm.pbf" "$WORK"/filtered/*.osm.pbf
+echo "    merged $(ls -1 "$WORK"/filtered/*.osm.pbf | wc -l) countries" 
 
 echo
 echo "Done: $WORK/touring-europe.osm.pbf ($(du -h "$WORK/touring-europe.osm.pbf" | cut -f1))"
