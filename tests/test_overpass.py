@@ -486,3 +486,111 @@ async def test_without_a_deadline_the_full_timeout_is_used():
         await overpass.run_query("q", settings, client, deadline=None)
 
     assert seen[0] == 90 + overpass.TRANSFER_MARGIN_S
+
+
+# ------------------------------------------------- chunks running concurrently
+
+async def _peak_inflight(chunks, settings, delay=0.05):
+    """Run a layer and report the most queries that were ever in flight."""
+    state = {"now": 0, "peak": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        await asyncio.sleep(delay)
+        state["now"] -= 1
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+    return state["peak"], result
+
+
+async def test_the_chunks_of_a_layer_run_at_the_same_time():
+    """The point of the change: a 3-chunk route is no longer 3 round trips deep."""
+    settings = Settings(overpass_concurrency=3)
+    chunks = [[(38.0, 22.0)], [(38.1, 22.0)], [(38.2, 22.0)]]
+
+    peak, result = await _peak_inflight(chunks, settings)
+
+    assert peak == 3, f"chunks still serialised: peak was {peak}"
+    assert result["partial"] is False
+
+
+async def test_concurrent_chunks_still_obey_the_semaphore():
+    """The safety property. Running chunks together must not ask the public
+    servers for more slots than they grant — the semaphore, not the shape of
+    the loop, is what decides how hard Overpass is hit."""
+    settings = Settings(overpass_concurrency=2)
+    chunks = [[(38.0 + i / 10, 22.0)] for i in range(6)]
+
+    peak, _ = await _peak_inflight(chunks, settings)
+
+    assert peak == 2, f"{peak} queries in flight at once, budget is 2"
+
+
+async def test_a_slow_chunk_no_longer_delays_the_others():
+    """What the fair-share allocation used to compensate for.
+
+    Sequentially, a chunk that hangs consumes the budget its siblings needed.
+    Concurrently it delays only itself, so the layer finishes in about the time
+    of its slowest chunk rather than the sum of all of them.
+    """
+    settings = Settings(overpass_concurrency=4)
+    chunks = [[(38.0 + i / 10, 22.0)] for i in range(4)]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.20)
+        return httpx.Response(200, json={"elements": []})
+
+    loop = asyncio.get_running_loop()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        started = loop.time()
+        await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+        elapsed = loop.time() - started
+
+    # Four 0.20s chunks: ~0.80s one after another, ~0.20s together.
+    assert elapsed < 0.5, f"took {elapsed:.2f}s — chunks look sequential"
+
+
+async def test_a_narrow_semaphore_shares_the_budget_between_chunks():
+    """Concurrency alone does not make one slow chunk harmless.
+
+    Where the semaphore is narrower than the number of chunks they still take
+    turns, so each is capped at its share of the budget — the fair-share rule
+    the sequential loop used, generalised. Otherwise one chunk's retries spend
+    the time the others were queueing for.
+    """
+    settings = Settings(overpass_concurrency=1, overpass_deadline_s=120.0,
+                        overpass_timeout_s=90)
+    chunks = [[(38.0 + i / 10, 22.0)] for i in range(4)]
+    seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions.get("timeout", {}).get("read"))
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+    # Four chunks, one at a time: four turns, so 30s each — not the 105s a
+    # single query would otherwise be allowed.
+    assert seen[0] == pytest.approx(30.0, abs=1.0), f"first chunk got {seen[0]}s"
+
+
+async def test_a_wide_semaphore_gives_each_chunk_the_whole_budget():
+    """With a slot per chunk nothing is queueing, so nothing needs rationing."""
+    settings = Settings(overpass_concurrency=4, overpass_deadline_s=120.0,
+                        overpass_timeout_s=90)
+    chunks = [[(38.0 + i / 10, 22.0)] for i in range(4)]
+    seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions.get("timeout", {}).get("read"))
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await overpass.run_chunked(chunks, lambda c: "q", settings, client)
+
+    # One turn, so each chunk may use the full per-query timeout.
+    assert seen[0] == pytest.approx(90 + overpass.TRANSFER_MARGIN_S, abs=1.0)

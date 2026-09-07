@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any, Callable, Sequence
 
@@ -106,6 +107,7 @@ async def run_query(
     *,
     attempts: int = 3,
     deadline: float | None = None,
+    allowance: float | None = None,
 ) -> dict[str, Any]:
     """POST an Overpass QL query and return the parsed JSON.
 
@@ -114,6 +116,10 @@ async def run_query(
     single stubborn chunk spent 311 seconds — three attempts at the full
     105-second timeout — which the rider experiences as the panel never filling
     in.
+
+    ``allowance`` caps a single attempt, so that one chunk of a layer cannot
+    spend the deadline its siblings needed. The deadline bounds the layer; the
+    allowance shares it out.
 
     Attempts rotate through the configured endpoints. A refused connection is
     the one failure a second server reliably fixes — the main instance drops
@@ -130,22 +136,53 @@ async def run_query(
     failures: list[str] = []
     last: OverpassError | None = None
 
+    # Set when this query first wins a slot. The allowance has to bound the
+    # query as a whole, retries included: capping only one attempt lets three
+    # retries spend three times the share, which is how one chunk of five ate a
+    # whole 60-second budget while the other four waited for the semaphore.
+    limit_at: float | None = None
+
     for attempt in range(attempts):
         endpoint = endpoints[attempt % len(endpoints)]
 
-        # Overriding the shared client's timeout: an Overpass query is allowed
-        # far longer than an ordinary API call, and must outlast the budget the
-        # query itself declares — but never longer than the deadline allows.
-        wait = settings.overpass_timeout_s + TRANSFER_MARGIN_S
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining < MIN_ATTEMPT_S:
-                raise last or OverpassError(
-                    f"Ran out of time for Overpass after {attempt} attempt(s)."
-                )
-            wait = min(wait, remaining)
-
         async with _semaphore(limit):
+            # The budget is measured *after* the slot is won, not before.
+            # Several chunks of a route now queue on this semaphore at once, so
+            # the wait for a slot is itself time off the deadline; a timeout
+            # computed before queueing would overrun it by however long the
+            # queue took. It is also why the allowance starts here: a query
+            # should be charged for its own time, not for its turn in the queue.
+            if allowance is not None and limit_at is None:
+                limit_at = time.monotonic() + allowance
+
+            # Overriding the shared client's timeout: an Overpass query is
+            # allowed far longer than an ordinary API call, and must outlast
+            # the budget the query itself declares — but never longer than the
+            # deadline allows.
+            wait = settings.overpass_timeout_s + TRANSFER_MARGIN_S
+
+            # The layer's deadline decides whether to start at all.
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining < MIN_ATTEMPT_S:
+                    raise last or OverpassError(
+                        f"Ran out of time for Overpass after {attempt} attempt(s)."
+                    )
+                wait = min(wait, remaining)
+
+            # The chunk's own share only trims the timeout, and ends the
+            # retries once spent. It is deliberately not a reason to refuse the
+            # first attempt: the share is floored at MIN_ATTEMPT_S, so testing
+            # it against MIN_ATTEMPT_S on the pass that just created it fails
+            # on nothing but the microseconds since.
+            if limit_at is not None:
+                share_left = limit_at - time.monotonic()
+                if attempt > 0 and share_left < MIN_ATTEMPT_S:
+                    raise last or OverpassError(
+                        f"Ran out of time for Overpass after {attempt} attempt(s)."
+                    )
+                wait = min(wait, max(share_left, MIN_ATTEMPT_S))
+
             try:
                 response = await client.post(
                     endpoint,
@@ -240,7 +277,7 @@ async def run_chunked(
     *,
     deadline_s: float | None = None,
 ) -> dict[str, Any]:
-    """Run one query per chunk and merge the results.
+    """Run one query per chunk, concurrently, and merge the results.
 
     Elements are de-duplicated by (type, id), because a feature spanning a seam
     is returned by both neighbouring queries.
@@ -248,60 +285,75 @@ async def run_chunked(
     A chunk that fails does not sink the layer: whatever the others found is
     returned with ``partial`` set. Most of a route's closures beats none of
     them, as long as the caller says which it is.
-    """
-    elements: list[dict[str, Any]] = []
-    seen: set[tuple[Any, Any]] = set()
-    failed = 0
-    skipped = 0
-    last_error: OverpassError | None = None
 
+    The chunks are launched together and bounded by the same semaphore every
+    other Overpass query uses, so this asks no more of the public servers than
+    running them one after another did — ``overpass_concurrency`` is still the
+    only thing deciding how many queries are in flight. What it removes is the
+    idle time: a layer no longer holds exactly one slot while another sits
+    free.
+
+    Concurrency alone does not make a slow chunk harmless. Where the semaphore
+    is narrower than the number of chunks, they still take turns, and a chunk
+    that hangs for the whole budget starves everything behind it — measured at
+    ``overpass_concurrency=1``, two chunks of five consumed a 60-second budget
+    and the other three never ran. So each chunk also gets an ``allowance``:
+    the budget divided by the number of turns the semaphore forces, which is
+    the old fair share generalised to any width. At a width of one it is the
+    old behaviour exactly; at a width of four with four chunks it is the whole
+    budget, because nothing is waiting behind them.
+    """
     budget = settings.overpass_deadline_s if deadline_s is None else deadline_s
     deadline = time.monotonic() + budget if budget else None
 
-    for index, chunk in enumerate(chunks):
-        chunk_deadline = None
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining < MIN_ATTEMPT_S:
-                # Out of budget. Returning what the earlier chunks found beats
-                # making the rider wait for sections that will not arrive.
-                skipped = len(chunks) - index
-                log.warning("Overpass budget of %.0fs spent; skipping %d chunk(s)",
-                            budget, skipped)
-                break
+    # How many turns the semaphore forces these chunks to take.
+    rounds = math.ceil(len(chunks) / max(1, settings.overpass_concurrency))
+    allowance = max(MIN_ATTEMPT_S, budget / rounds) if budget else None
 
-            # Each chunk gets a fair share of what is left, so one pathological
-            # section cannot starve the rest. Without this a single hanging
-            # chunk consumed the whole budget and the rider got nothing, when
-            # the other two would have answered in a second each.
-            share = max(MIN_ATTEMPT_S, remaining / (len(chunks) - index))
-            chunk_deadline = time.monotonic() + min(share, remaining)
+    results = await asyncio.gather(
+        *(run_query(build(chunk), settings, client,
+                    deadline=deadline, allowance=allowance)
+          for chunk in chunks),
+        return_exceptions=True,
+    )
 
-        try:
-            payload = await run_query(build(chunk), settings, client,
-                                      deadline=chunk_deadline)
-        except OverpassError as exc:
+    elements: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    failed = 0
+    last_error: OverpassError | None = None
+
+    # Merged in chunk order, which `gather` preserves regardless of the order
+    # they actually finished in, so the same route always yields the same list.
+    for index, result in enumerate(results):
+        if isinstance(result, OverpassError):
             failed += 1
-            last_error = exc
+            last_error = result
             log.warning("Overpass chunk %d/%d failed: %s",
-                        index + 1, len(chunks), exc)
+                        index + 1, len(chunks), result)
             continue
+        if isinstance(result, BaseException):
+            # Not an Overpass failure — a bug here, or the request being
+            # cancelled. Neither should be quietly folded into "partial".
+            raise result
 
-        for element in payload.get("elements", []):
+        for element in result.get("elements", []):
             key = (element.get("type"), element.get("id"))
             if key in seen:
                 continue
             seen.add(key)
             elements.append(element)
 
-    missing = failed + skipped
-    if missing == len(chunks):
+    if failed == len(chunks):
         raise last_error or OverpassError("Every part of the route failed.")
+
+    if failed:
+        log.warning("Overpass answered %d of %d chunk(s) within %.0fs",
+                    len(chunks) - failed, len(chunks), budget)
 
     return {
         "elements": elements,
-        "partial": missing > 0,
-        "failed_chunks": missing,
+        "partial": failed > 0,
+        "failed_chunks": failed,
         "total_chunks": len(chunks),
     }
 

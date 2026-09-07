@@ -1,5 +1,7 @@
 """Hazard service tests, with Overpass answered by a mock transport."""
 
+import urllib.parse
+
 import httpx
 import pytest
 
@@ -239,12 +241,13 @@ async def test_a_partial_answer_is_cached_only_briefly(monkeypatch, route, setti
     original = cache.set
     cache.set = lambda key, value, ttl_s: (ttls.append(ttl_s), original(key, value, ttl_s))[1]
 
-    calls = {"n": 0}
-
     def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        # The first chunk fails all three of its attempts; the rest answer.
-        if calls["n"] <= 3:
+        # Fail the chunk containing the route's first coordinate, and only it.
+        # Keying on the query text rather than on call order matters now that
+        # the chunks run concurrently: their requests interleave, so "the first
+        # three calls" is no longer "the first chunk's three attempts".
+        query = urllib.parse.unquote_plus(request.content.decode())
+        if "48.00000,11.00000" in query:
             return httpx.Response(504, text="gateway timeout")
         return httpx.Response(200, json={"elements": []})
 
