@@ -36,8 +36,6 @@ log = logging.getLogger(__name__)
 
 #: Coarser than the drawing tolerance: Overpass has to parse every coordinate we
 #: send, and a 200 m deviation is irrelevant when the corridor is 150 m wide.
-_QUERY_SIMPLIFY_M = 250.0
-_MAX_QUERY_POINTS = 350
 
 #: Vertices kept per Overpass way when measuring its distance to the route.
 _MAX_WAY_VERTICES = 30
@@ -132,7 +130,7 @@ async def find_hazards(
     if settings.offline:
         return {"available": False, "reason": "Offline mode is enabled.", "hazards": []}
 
-    query_coords = _query_coordinates(route_points)
+    query_coords = _query_coordinates(route_points, settings)
     chunks = chunk_coordinates(query_coords, settings.overpass_max_points)
 
     def build(chunk):
@@ -180,17 +178,21 @@ async def find_hazards(
     return result
 
 
-def _query_coordinates(route_points: Sequence[geo.LatLon]) -> list[geo.LatLon]:
-    """Thin the route down to something Overpass can chew on quickly."""
-    simplified = geo.simplify(route_points, _QUERY_SIMPLIFY_M)
-    if len(simplified) <= _MAX_QUERY_POINTS:
-        return simplified
-    # Still too many after simplifying (a very long tour): take an even spread.
-    step = len(simplified) / _MAX_QUERY_POINTS
-    picked = [simplified[int(i * step)] for i in range(_MAX_QUERY_POINTS)]
-    if picked[-1] != simplified[-1]:
-        picked.append(simplified[-1])
-    return picked
+def _query_coordinates(route_points: Sequence[geo.LatLon],
+                       settings: Settings) -> list[geo.LatLon]:
+    """Coordinates whose corridor actually covers the route.
+
+    This used to thin at a fixed 250 m and cap the result at 350 points, which
+    is where the closure layer quietly stopped searching most of a long route:
+    a 250 m tolerance inside a 150 m corridor leaves real road outside the
+    corridor on every curve, and 350 points spread over 389 km sit 1.1 km
+    apart, nearly four times too far for 150 m circles to touch.
+
+    Nothing said so. The panel reported the closures it found and no error, and
+    a closure in one of the gaps simply did not exist as far as the app was
+    concerned. Coverage is worth more queries than that.
+    """
+    return geo.corridor_points(route_points, settings.hazard_corridor_m)
 
 
 def _elements_to_hazards(

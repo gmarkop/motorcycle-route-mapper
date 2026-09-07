@@ -383,3 +383,75 @@ def curviness_profile(
         profile.append((anchor_idx[j], anchor_dist[j], value))
 
     return profile
+
+
+def _interpolate_along(points: Sequence[LatLon], spacing_m: float) -> list[LatLon]:
+    """Walk the line emitting a point at least every ``spacing_m``.
+
+    :func:`sample_every` can only return coordinates the route already has, so
+    it cannot close a gap: a GPX whose points are 2 km apart still yields 2 km
+    gaps. New points are interpolated along each segment instead. Where the
+    road between two recorded points is unknown, the straight line between them
+    is what the file itself asserts, so it is the honest estimate.
+    """
+    out: list[LatLon] = [points[0]]
+    for a, b in zip(points, points[1:]):
+        span = haversine_m(a, b)
+        if span > spacing_m:
+            steps = int(span // spacing_m)
+            for k in range(1, steps + 1):
+                t = k * spacing_m / span
+                if t < 1.0:
+                    out.append((a[0] + (b[0] - a[0]) * t,
+                                a[1] + (b[1] - a[1]) * t))
+        out.append(b)
+    return out
+
+
+def corridor_points(
+    points: Sequence[LatLon],
+    radius_m: float,
+    max_points: int | None = None,
+) -> list[LatLon]:
+    """Coordinates whose corridor genuinely covers the route.
+
+    Overpass is asked for features within ``radius_m`` of a list of
+    coordinates. Thinning that list is what makes a long route affordable, and
+    thinning it too far is how a route stops being searched without anything
+    saying so. Two conditions have to hold, and which one binds depends on a
+    detail of Overpass worth not betting on:
+
+    * If ``around:`` follows the line *between* coordinates, the thinned line
+      must stay well inside the corridor. Douglas-Peucker with tolerance ``t``
+      guarantees only that the road is within ``t`` of the line, so ``t`` has
+      to be comfortably smaller than ``radius_m`` — a 250 m tolerance inside a
+      150 m corridor left 100 m of real road outside it on every curve it cut.
+    * If it searches near each coordinate instead, consecutive coordinates must
+      be no more than ``2 * radius_m`` apart, or the circles do not touch and
+      the road between them is never looked at.
+
+    Satisfying both costs no more than satisfying the stricter one, so this
+    does that and the question stops mattering.
+
+    ``max_points`` is a ceiling for a caller that must bound a single query.
+    Reaching it means the corridor is *not* fully covered, so callers that care
+    about coverage should chunk instead of capping.
+    """
+    if len(points) < 2:
+        return list(points)
+
+    # Thin first, then fill the gaps thinning left. The other order keeps every
+    # recorded point on a straight road — a 1 Hz track log would send thousands
+    # of coordinates 10 m apart to cover a corridor that needs one every 225 m.
+    #
+    # Simplifying to half the radius bounds how far the road can stray from the
+    # line through these coordinates, so a cut curve stays inside the corridor.
+    thinned = simplify(points, max(radius_m * 0.5, 1.0))
+
+    # Then no gap wider than the circles can bridge.
+    merged = _interpolate_along(thinned, max(radius_m * 1.5, 1.0))
+
+    if max_points is not None and len(merged) > max_points:
+        step = len(merged) / max_points
+        merged = [merged[int(i * step)] for i in range(max_points)]
+    return merged

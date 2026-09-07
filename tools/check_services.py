@@ -103,6 +103,37 @@ async def check_overpass(settings: Settings, client: httpx.AsyncClient,
                 line("ok", label, detail)
 
 
+def _straightest_stretch(points, target_km: float):
+    """The straightest run of roughly `target_km` anywhere on the route.
+
+    The corridor probe needs a straight stretch, and the reason is the whole
+    point of the probe. On a curvy road, "circles around each coordinate" and
+    "a corridor along the straight chords between them" BOTH lose most of the
+    road when you thin the coordinates — the counts collapse either way and the
+    experiment proves nothing. Where the road is straight the two readings
+    predict the same corridor, so a collapse can only mean circles.
+
+    Straightness is end-to-end distance over distance along the road: 1.0 is a
+    ruler, 0.9 is a gentle sweep.
+    """
+    cumulative = geo.cumulative_distances(points)
+    target_m = target_km * 1000
+    best = None
+
+    start = 0
+    for end in range(1, len(points)):
+        while cumulative[end] - cumulative[start] > target_m and start < end - 1:
+            start += 1
+        along = cumulative[end] - cumulative[start]
+        if along < target_m * 0.8:
+            continue
+        straightness = geo.haversine_m(points[start], points[end]) / along
+        if best is None or straightness > best[0]:
+            best = (straightness, points[start:end + 1])
+
+    return best if best else (0.0, [])
+
+
 def _stretch_of(points, target_km: float):
     """A run of roughly `target_km` taken from the middle of the route."""
     middle = len(points) // 2
@@ -192,13 +223,20 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
         line("warn", "route too short to test", "needs a longer route")
         return
 
-    # A SHORT stretch from the middle. The probe only has to make a gap
-    # obvious, not cover the route: an earlier version took the middle half and
-    # sent it unchunked, building a query more expensive than any the app
-    # issues — it duly timed out without answering the question at all.
-    stretch = _stretch_of(points, target_km=25.0)
+    # The STRAIGHTEST short stretch, not merely a short one. On a curvy road
+    # both candidate readings of `around:` lose the road when the coordinates
+    # are thinned, so the counts collapse either way and prove nothing. A
+    # straight stretch is where the two readings disagree.
+    straightness, stretch = _straightest_stretch(points, target_km=8.0)
+    if len(stretch) < 4:
+        line("warn", "route too short to find a straight stretch", "skipping")
+        return
+
     span_km = geo.total_distance_m(stretch) / 1000
-    dense = geo.simplify(stretch, 150.0)[:settings.overpass_max_points]
+    # Every ~200 m: dense enough that circles of 150 m overlap, so this query
+    # covers the corridor under either reading and is the yardstick.
+    dense = [stretch[i] for i, _ in geo.sample_every(stretch, 200.0)]
+    dense = dense[:settings.overpass_max_points]
     sparse = [stretch[0], stretch[-1]]
     gap_km = geo.haversine_m(sparse[0], sparse[1]) / 1000
 
@@ -206,6 +244,9 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
         line("warn", "no suitable stretch found",
              f"{span_km:.0f} km, {len(dense)} points")
         return
+    if straightness < 0.9:
+        line("warn", f"straightest stretch is only {straightness:.2f} straight",
+             "the verdict below cannot separate circles from chords")
 
     def counting_query(coords):
         joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
@@ -238,7 +279,8 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
         line("warn", "server did not return a count", "cannot tell; skipping")
         return
 
-    line("ok", f"stretch of {span_km:.0f} km, endpoints {gap_km:.0f} km apart",
+    line("ok", f"straight stretch of {span_km:.0f} km "
+               f"(straightness {straightness:.2f}), ends {gap_km:.0f} km apart",
          f"{len(dense)} dense points vs 2")
     print(f"    highways found with dense coordinates: {dense_total}")
     print(f"    highways found with only the two ends: {sparse_total}")
@@ -246,13 +288,15 @@ async def check_corridor_semantics(settings: Settings, client: httpx.AsyncClient
     if dense_total == 0:
         line("warn", "no highways found either way", "inconclusive on this route")
     elif sparse_total >= dense_total * 0.8:
-        line("ok", "`around:` follows the line",
-             "the corridor is continuous, thinning is safe")
+        line("ok", "`around:` follows the line between coordinates",
+             "spacing is safe; the thinning tolerance still has to be "
+             "smaller than the corridor")
     else:
-        line("fail", "`around:` searches the points, not the line",
-             f"only {100 * sparse_total / dense_total:.0f}% found")
+        line("fail", "`around:` searches near the coordinates, not along the line",
+             f"only {100 * sparse_total / dense_total:.0f}% found on a straight road")
         failures.append(
-            "CORRIDOR GAP: thinned coordinates leave most of a long route unsearched"
+            "CORRIDOR GAP: coordinates must be closer together than twice the "
+            "corridor radius, or most of a long route goes unsearched"
         )
 
 
