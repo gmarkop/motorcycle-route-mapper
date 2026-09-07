@@ -390,6 +390,31 @@ public servers it is not affordable. Long routes against public Overpass will
 now report partial results — which is not new breakage but the pre-existing gap
 finally becoming visible.
 
+### The tools are code, and nothing was testing them
+
+Changing `_query_coordinates` to take `settings` updated both call sites in the
+app and missed the one in `tools/check_services.py`. 290 tests stayed green,
+because the suite never imports `tools/`. It surfaced as a `TypeError` on the
+owner's server, mid-setup, three merges after the change.
+
+Two things now close that gap:
+
+`check_services.py --dry-run` builds every query and sends none — route
+parsing, the app's coordinate thinning, chunking, query building — which is
+where the wiring between tool and app lives. It is also the honest answer to
+"what is this about to ask for?" before pointing the checker at a public server
+with a 600 km route.
+
+`tests/test_tools.py` runs each tool as a subprocess: syntax, `--help`, the dry
+run, and the corridor invariant read back out of the tool's own output. Checked
+against the broken call to confirm it fails there.
+
+The wider point, having now cost this several times: work that cannot be
+executed in this environment gets no feedback, and the diagnostics were exactly
+that — written to be run on a machine with a network, never run here. Anything
+in `tools/` or `deploy/` needs a way to be exercised locally, however partial,
+or it is being written blind.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
