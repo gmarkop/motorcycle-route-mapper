@@ -125,7 +125,12 @@ async def find_pois(
     cached = cache.get(cache_key)
     if cached is None:
         try:
-            cached = await run_chunked(chunks, build, settings, client)
+            widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
+                         settings.viewpoint_corridor_m)
+            bounds = geo.bounding_box(_query_coordinates(route_points),
+                                      margin_m=widest)
+            cached = await run_chunked(chunks, build, settings, client,
+                                       bounds=bounds)
         except OverpassError as exc:
             log.warning("Overpass POI query failed: %s", exc)
             stale = cache.get_stale(cache_key)

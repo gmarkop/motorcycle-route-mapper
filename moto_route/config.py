@@ -37,6 +37,31 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bbox(name: str) -> tuple[float, float, float, float] | None:
+    """A "south,west,north,east" environment value, or None when unset.
+
+    A malformed value is refused rather than ignored. This one decides whether
+    a self-hosted Overpass is trusted to answer for a given route, and a typo
+    that silently disabled the check would reinstate exactly the failure the
+    setting exists to prevent.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    if len(parts) != 4:
+        raise ValueError(f"{name} must be 'south,west,north,east', got {raw!r}")
+    try:
+        south, west, north, east = (float(part) for part in parts)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be four numbers, got {raw!r}") from exc
+    if not (-90 <= south < north <= 90 and -180 <= west < east <= 180):
+        raise ValueError(
+            f"{name} must be south,west,north,east with south<north and "
+            f"west<east, got {raw!r}")
+    return south, west, north, east
+
+
 def _env_list(name: str, default: tuple[str, ...] = ()) -> list[str]:
     """Comma-separated environment value, e.g. MOTO_AUTOBAHN_ROADS=A8,A81.
 
@@ -110,6 +135,14 @@ class Settings:
     #: Other public Overpass instances to fall back to. The main server drops
     #: connections when it is busy, and a refused connection is precisely the
     #: failure a second endpoint fixes. Comma-separated; set empty to disable.
+    #: Bounding box the primary Overpass instance actually holds, as
+    #: "south,west,north,east". Set this when the primary is your own server
+    #: built from country extracts: outside the box it would answer "nothing
+    #: here" with total confidence, so outside the box it is not asked.
+    #: Unset (the default) means the primary is assumed to cover everything,
+    #: which is true of the public servers.
+    overpass_coverage: tuple[float, float, float, float] | None = field(
+        default_factory=lambda: _env_bbox("MOTO_OVERPASS_COVERAGE"))
     overpass_fallback_urls: list[str] = field(default_factory=lambda: _env_list(
         "MOTO_OVERPASS_FALLBACK_URLS",
         ("https://overpass.kumi.systems/api/interpreter",),
@@ -193,6 +226,39 @@ class Settings:
             if url and url not in endpoints:
                 endpoints.append(url)
         return endpoints
+
+    def endpoints_for(self, bounds: tuple[float, float, float, float] | None
+                      ) -> list[str]:
+        """The Overpass instances fit to answer about this piece of the world.
+
+        A self-hosted instance built from country extracts holds only those
+        countries, and it does not know that. Asked about a road outside them
+        it returns an empty result and HTTP 200 — indistinguishable from a
+        genuinely clear road, which is the worst possible answer: the rider is
+        told there are no closures rather than told nothing is known.
+
+        So when ``overpass_coverage`` is set, the primary is used only for a
+        route that lies wholly inside it, and anything crossing the edge goes
+        to the public servers instead. Without the setting nothing changes.
+
+        ``bounds`` is (south, west, north, east), or None when the caller does
+        not know, which is treated as "not provably inside".
+        """
+        endpoints = self.overpass_endpoints
+        covers = self.overpass_coverage
+        if not covers or len(endpoints) == 1:
+            return endpoints
+
+        south, west, north, east = covers
+        if bounds is not None:
+            b_south, b_west, b_north, b_east = bounds
+            if (south <= b_south and b_north <= north
+                    and west <= b_west and b_east <= east):
+                return endpoints
+
+        # Outside, straddling, or unknown: skip the local instance entirely
+        # rather than let it answer for ground it has never seen.
+        return endpoints[1:]
 
     @property
     def user_agent(self) -> str:
