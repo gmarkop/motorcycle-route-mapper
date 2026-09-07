@@ -370,11 +370,24 @@ The box has a connection, which the machine this was built on did not. Two
 things are worth doing from there:
 
 ```bash
-cd /opt/moto-route
-.venv/bin/python tools/check_services.py
-.venv/bin/python tools/check_services.py --route ~/my-tour.gpx
-.venv/bin/python tools/verify_autobahn.py
+cd ~/motorcycle-route-mapper
+VENV=/opt/moto-route/.venv/bin/python
+
+$VENV tools/check_services.py
+$VENV tools/check_services.py --route ~/my-tour.gpx
+$VENV tools/check_coverage.py                       # if you self-host Overpass
+$VENV tools/verify_autobahn.py
 ```
+
+**The service's interpreter, your checkout's scripts.** The dependencies
+(`httpx`, and `playwright` for the browser checks) live in the virtualenv
+`install.sh` builds, so the system `python3` fails on the first import — the
+tools now say so and print the command above rather than a bare traceback. But
+run the scripts from your *checkout*, not from `/opt/moto-route`: that is a
+copy taken at install time, so after a `git pull` it is the older code, and
+each script puts its own directory on `sys.path` and imports the app from
+there. `check_services.py` prints the path and commit it is running from, so a
+stale copy is visible in its first line.
 
 These read `/etc/moto-route.env` themselves, so they test the deployment you
 actually run rather than the defaults — which matters once that file names a

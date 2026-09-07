@@ -47,3 +47,32 @@ def load(path: Path = ENV_FILE) -> list[str]:
         os.environ[key] = value.strip().strip('"').strip("'")
         applied.append(key)
     return applied
+
+
+#: Where install.sh puts the service's virtualenv.
+VENV_PYTHON = Path("/opt/moto-route/.venv/bin/python")
+
+
+def require(module: str) -> None:
+    """Exit with the command that works, rather than a bare ImportError.
+
+    These tools live in the repository but their dependencies live in the
+    service's virtualenv, so running them with the system interpreter fails on
+    the first third-party import. The traceback names the module and not the
+    fix, and the fix is not obvious: use the venv's interpreter, but keep the
+    checkout's script, since /opt/moto-route is a copy that may be older than
+    what you just merged.
+    """
+    import sys
+
+    script = Path(sys.argv[0]).resolve()
+    print(f"{script.name} needs the '{module}' package, which is not installed "
+          f"for {sys.executable}.\n", file=sys.stderr)
+    if VENV_PYTHON.is_file():
+        print("Run it with the service's interpreter and this checkout:\n"
+              f"    {VENV_PYTHON} {script}", file=sys.stderr)
+        if len(sys.argv) > 1:
+            print(f"        {' '.join(sys.argv[1:])}", file=sys.stderr)
+    else:
+        print(f"    pip install {module}", file=sys.stderr)
+    sys.exit(2)
