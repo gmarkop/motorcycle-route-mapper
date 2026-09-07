@@ -223,6 +223,68 @@ pending line, and the line clears when the real rows land.
 concurrency. Running them concurrently would interact with the fair-share
 deadline logic and is a bigger change than this round warranted.
 
+### Measured: chunk-level concurrency, and the 3x that was never there
+
+`run_chunked` ran a layer's chunks one after another, so a 5-chunk route was 5
+round trips deep. They now run together under the same semaphore. Measured
+end-to-end against a stub holding every query 3 s, 5 chunks per layer, both
+Overpass layers requested at once:
+
+| | sequential | concurrent |
+| --- | --- | --- |
+| `concurrency=2`, both layers cold | 15.1 s | **15.1 s** |
+| `concurrency=2`, one layer cached | 15.0 s | 9.0 s |
+| `concurrency=4`, both layers cold | 15.1 s | 9.1 s |
+| `concurrency=4`, one layer cached | 15.0 s | 6.0 s |
+
+**The first row is the important one, and it refutes what I predicted.** I told
+the owner to expect "roughly another 3x". There is no 3x. At
+`concurrency=2` with both layers cold — the ordinary case on public Overpass —
+the semaphore is already saturated by the two layers, one slot each, and how
+the chunks inside a layer are sequenced changes nothing. Wall clock is
+`ceil(total_queries / concurrency) x query_time` either way.
+
+What the change actually buys:
+
+- **`overpass_concurrency` becomes a real dial.** Before, raising it above 2 did
+  nothing at all (row 3: 15.1 s at both 2 and 4) because each layer could only
+  ever occupy one slot. Now extra slots are used.
+- **No idle slots.** When one layer is cached or fast, the other can use the
+  whole semaphore instead of one slot (rows 2 and 4).
+- The route to a genuinely faster app is therefore a self-hosted Overpass with
+  a higher concurrency, not further work on this loop.
+
+**A regression caught before shipping.** Deleting the fair-share allocation
+looked justified — parallel chunks cannot starve each other. But where the
+semaphore is narrower than the chunk count they still take turns, and a chunk
+that hangs through its retries spends the time the queue behind it needed. So
+each chunk keeps an `allowance`: the budget divided by `ceil(chunks /
+concurrency)`, the number of turns the semaphore forces. At width 1 that is the
+old fair share exactly; at width >= chunk count it is the whole budget, because
+nothing is waiting. Verified at parity with the sequential code for budgets of
+60, 70 and 90 s.
+
+Two smaller things the concurrency forced:
+
+- The deadline is now read **after** the semaphore is acquired, not before.
+  Queueing for a slot is time off the budget, and a timeout computed before the
+  queue would overrun it by however long the queue took. Harmless while queries
+  were sequential; wrong the moment several chunks wait at once.
+- The allowance bounds a chunk **across its retries**, from when it first wins a
+  slot. Capping a single attempt lets three retries spend three times the share.
+
+**A testing limit worth knowing.** `httpx.MockTransport` does not enforce HTTP
+timeouts — the handler simply runs to completion. So "a chunk that hangs" cannot
+be simulated with it, and any test that appears to prove timeout behaviour that
+way is measuring handler duration instead. The deadline and allowance
+arithmetic is tested by inspecting the timeout passed to the request
+(`request.extensions["timeout"]["read"]`) and with a patched
+`time.monotonic`, both of which exercise our own code rather than httpx's.
+
+Tests keying on call *order* also had to be rewritten to key on query content:
+with chunks running concurrently, "the first three calls" is no longer "the
+first chunk's three attempts".
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
