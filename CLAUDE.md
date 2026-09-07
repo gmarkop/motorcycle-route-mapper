@@ -390,6 +390,49 @@ public servers it is not affordable. Long routes against public Overpass will
 now report partial results — which is not new breakage but the pre-existing gap
 finally becoming visible.
 
+### Confirmed on real data: the corridor gap was 19% of the closures
+
+The Pavliani route (389 km) against the owner's self-hosted Overpass, before
+and after `geo.corridor_points`:
+
+| | query points | chunks | time | closures found |
+| --- | --- | --- | --- | --- |
+| fixed 250 m thinning | 169 | 3 | 10.7 s | 36 |
+| corridor-derived | 1883 | 32 | **10.6 s** | **43** |
+
+Seven closures on one route — nearly a fifth — were being missed, with no error
+and nothing in the panel to suggest anything was absent. That is the whole
+argument for the change, and it took a real route on real data to produce it:
+the fault was provable from the constants alone, but not its size.
+
+**The extra chunks cost nothing.** Ten times the coordinates in the same wall
+clock, because a local Overpass answers each chunk in a fraction of a second
+and eight run at once. The same route through the public servers lost 20 of 32
+chunks and returned 21 closures — half of what is there. Full corridor coverage
+on a long route is a self-hosted feature; on the public servers it is honestly
+partial, which is at least visible.
+
+### The checker drifted from the app twice, the same way
+
+Both times a change in the app left `tools/check_services.py` describing
+something the app no longer does, and both times nothing caught it:
+
+* `_query_coordinates` gained a `settings` argument. The checker's call was not
+  updated, `pytest` does not import `tools/`, and it surfaced as a `TypeError`
+  on the owner's server three merges later. Fixed with `--dry-run` and
+  `tests/test_tools.py`.
+* The checker built *both* layers' queries from the closure layer's
+  coordinates. Harmless while the two thinned identically; after the corridor
+  fix the POI query was reported at 32 chunks when the app sends about 5.
+
+The second is the more instructive: nothing was broken, the numbers were just
+about a different program. A diagnostic claiming "as the app sends them" has to
+be re-read whenever the app changes how it sends them.
+
+The checker also forced `overpass_concurrency=1`, which measured a cadence no
+rider experiences. It now uses `settings.concurrency_for()` per endpoint, the
+same 8-local/2-public split the app applies.
+
 ### The tools are code, and nothing was testing them
 
 Changing `_query_coordinates` to take `settings` updated both call sites in the
