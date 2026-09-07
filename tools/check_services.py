@@ -65,26 +65,45 @@ async def check_overpass(settings: Settings, client: httpx.AsyncClient,
     almost as unhelpful as not measuring it.
     """
     print("\nOverpass (closures and points of interest)")
-    coords = hazards._query_coordinates(route.all_latlon, settings)
-    chunks = overpass.chunk_coordinates(coords, settings.overpass_max_points)
     header = overpass.query_header(settings)
 
-    builders = {
-        "closure query": lambda chunk: hazards.build_query(
-            chunk, settings.hazard_corridor_m, settings.max_hazards, header=header),
-        "POI query": lambda chunk: pois.build_query(chunk, settings),
-    }
-    print(f"  {DIM}{len(coords)} query points -> {len(chunks)} chunk(s) of at most "
-          f"{settings.overpass_max_points}, as the app sends them{RESET}")
+    # Each layer gets its own coordinates, because they no longer agree. The
+    # spacing follows the corridor, so the 150 m closure search needs several
+    # times as many coordinates as the 1 km fuel search. Measuring both from
+    # the closure layer's list -- which this did until the corridor fix made
+    # them differ -- reported the POI query as many times more expensive than
+    # the app ever makes it.
+    layers = [
+        ("closure query",
+         hazards._query_coordinates(route.all_latlon, settings),
+         lambda chunk: hazards.build_query(chunk, settings.hazard_corridor_m,
+                                           settings.max_hazards, header=header)),
+        ("POI query",
+         pois._query_coordinates(route.all_latlon, settings),
+         lambda chunk: pois.build_query(chunk, settings)),
+    ]
+    plans = [(label, overpass.chunk_coordinates(points, settings.overpass_max_points),
+              build) for label, points, build in layers]
+
+    for (label, points, _), (_, chunks, _) in zip(layers, plans):
+        print(f"  {DIM}{label}: {len(points)} query points -> {len(chunks)} "
+              f"chunk(s) of at most {settings.overpass_max_points}, "
+              f"as the app sends them{RESET}")
 
     for endpoint in settings.overpass_endpoints:
         host = overpass._host(endpoint)
         print(f"  {DIM}via {host}{RESET}")
+        # The app's own width for this endpoint -- 8 against your own server, 2
+        # against the public ones. Forcing 1 measured a cadence the rider never
+        # experiences and made the local server look slower than it is.
+        width = settings.concurrency_for([endpoint])
         single = Settings(
             overpass_url=endpoint, overpass_fallback_urls=[],
-            overpass_timeout_s=settings.overpass_timeout_s, overpass_concurrency=1,
+            overpass_timeout_s=settings.overpass_timeout_s,
+            overpass_concurrency=width,
+            overpass_local_concurrency=width,
         )
-        for label, build in builders.items():
+        for label, chunks, build in plans:
             result, exc, seconds = await timed(
                 overpass.run_chunked(chunks, build, single, client))
             if exc is not None:
