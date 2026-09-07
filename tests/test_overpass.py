@@ -783,3 +783,25 @@ async def test_a_fallback_route_never_exceeds_the_public_allowance(monkeypatch, 
                                    coverage_points=[p for c in chunks for p in c])
 
     assert state["peak"] <= 2, f"{state['peak']} public queries at once, allowance is 2"
+
+
+@pytest.mark.parametrize("url, expect", [
+    ("http://127.0.0.1:12345/api/interpreter", "your own Overpass"),
+    ("http://localhost:12345/api/interpreter", "your own Overpass"),
+    ("https://overpass-api.de/api/interpreter", "public Overpass servers"),
+])
+async def test_a_refused_connection_gives_advice_that_fits_the_server(url, expect):
+    """Telling someone whose own container is down to wait for the public
+    servers to become less busy sends them to watch a problem that will never
+    clear."""
+    settings = Settings(overpass_url=url, overpass_fallback_urls=[],
+                        overpass_concurrency=1)
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError) as caught:
+            await overpass.run_query("q", settings, client, attempts=1)
+
+    assert expect in str(caught.value)

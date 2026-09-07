@@ -24,10 +24,12 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx  # noqa: E402
 
 from moto_route import geo  # noqa: E402
+import _env  # noqa: E402
 from moto_route.config import Settings  # noqa: E402
 from moto_route.parsers import parse_route_bytes  # noqa: E402
 from moto_route.services import hazards, overpass, pois  # noqa: E402
@@ -272,6 +274,9 @@ async def main() -> int:
                              "(default: examples/dolomites_demo.gpx)")
     args = parser.parse_args()
 
+    # Before Settings(), so the deployment's own configuration is what gets
+    # tested rather than the defaults.
+    applied = _env.load()
     settings = Settings()
     repo = Path(__file__).resolve().parent.parent
     route_path = Path(args.route).expanduser() if args.route else repo / "examples" / "dolomites_demo.gpx"
@@ -281,6 +286,17 @@ async def main() -> int:
         return 2
 
     print(f"{DIM}{describe_checkout(repo)}{RESET}")
+    if applied:
+        print(f"{DIM}Loaded {len(applied)} setting(s) from {_env.ENV_FILE}{RESET}")
+    # Named explicitly, because "which Overpass did this actually measure" is
+    # the first thing to doubt when the numbers look surprising in either
+    # direction.
+    for index, endpoint in enumerate(settings.overpass_endpoints):
+        role = "primary" if index == 0 else "fallback"
+        print(f"{DIM}Overpass {role}: {endpoint}{RESET}")
+    if settings.overpass_coverage_files:
+        print(f"{DIM}Coverage: {len(settings.overpass_coverage_files)} "
+              f"polygon file(s){RESET}")
     print(f"Checking the services this app needs, using {route_path.name} "
           f"({route.distance_m / 1000:.0f} km, "
           f"{len(geo.simplify(route.all_latlon, 250))} query points)")
