@@ -337,7 +337,7 @@ All optional, all environment variables.
 | `MOTO_HAZARD_CORRIDOR_M` | `150` | How far off-route a closure still counts |
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
-| `MOTO_OVERPASS_CONCURRENCY` | `1` | Overpass queries in flight at once — the public instance allows about two per IP |
+| `MOTO_OVERPASS_CONCURRENCY` | `2` | Overpass queries in flight at once — the public instance allows about two per IP; drop to `1` if rate-limited |
 | `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
 | `MOTO_OVERPASS_MAX_POINTS` | `60` | Route coordinates per query; longer routes are split into several |
 | `MOTO_OVERPASS_DEADLINE` | `120` | Total seconds one layer may spend on Overpass before returning what it has |
@@ -358,6 +358,7 @@ All optional, all environment variables.
 | `MOTO_MAX_AUTOBAHN_ROADS` | `8` | Cap on motorways queried per route |
 | `MOTO_MAX_INCIDENTS` | `150` | Cap on incidents returned |
 | `MOTO_INCIDENT_TTL` | `600` | Incident cache lifetime, seconds |
+| `MOTO_PARTIAL_TTL` | `300` | Cache lifetime for an answer missing sections, so Refresh retries them |
 | `MOTO_MAX_HAZARDS` | `200` | Cap on OSM closures returned |
 | `MOTO_MAX_POIS` | `300` | Cap on fuel/cafe/viewpoint results |
 

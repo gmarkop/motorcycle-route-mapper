@@ -217,3 +217,54 @@ async def test_results_are_cached_between_calls(route, settings, cache):
         await hazards.find_hazards(route, settings, client, cache)
 
     assert calls["n"] == 1
+
+
+async def test_a_partial_answer_is_cached_only_briefly(monkeypatch, route, settings, cache):
+    """The panel says "press Refresh to try the rest" — so Refresh must retry.
+
+    A partial answer cached for the full six hours would make that instruction
+    a lie: every Refresh would replay the same gaps out of the cache without
+    ever asking Overpass again.
+    """
+    monkeypatch.setattr(overpass, "RETRY_BASE_DELAY", 0)
+    settings = Settings(cache_dir=settings.cache_dir, hazard_corridor_m=150,
+                        overpass_max_points=10)
+    # A zig-zag, because Douglas-Peucker collapses the straight fixture route to
+    # two points and two points are always a single chunk.
+    route = Route(name="Zig", lines=[[GeoPoint(lat=48.0 + i * 0.004,
+                                               lon=11.0 + (i % 2) * 0.02)
+                                      for i in range(40)]])
+
+    ttls: list[int] = []
+    original = cache.set
+    cache.set = lambda key, value, ttl_s: (ttls.append(ttl_s), original(key, value, ttl_s))[1]
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        # The first chunk fails all three of its attempts; the rest answer.
+        if calls["n"] <= 3:
+            return httpx.Response(504, text="gateway timeout")
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await hazards.find_hazards(route, settings, client, cache)
+
+    assert result["partial"] is True
+    assert ttls == [settings.partial_ttl_s]
+    assert settings.partial_ttl_s < settings.hazard_ttl_s
+
+
+async def test_a_complete_answer_keeps_the_long_cache_life(route, settings, cache):
+    """The short TTL is for gaps only; a whole answer still lasts six hours."""
+    ttls: list[int] = []
+    original = cache.set
+    cache.set = lambda key, value, ttl_s: (ttls.append(ttl_s), original(key, value, ttl_s))[1]
+
+    async with httpx.AsyncClient(
+            transport=httpx.MockTransport(responder({"elements": []}))) as client:
+        result = await hazards.find_hazards(route, settings, client, cache)
+
+    assert result["partial"] is False
+    assert ttls == [settings.hazard_ttl_s]

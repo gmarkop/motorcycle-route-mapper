@@ -170,6 +170,59 @@ apart on straight roads, so if `around:` searches near each coordinate rather
 than along the line, most of a long route goes unsearched and closures are
 missed with no error shown.
 
+### Measured: why the slow layers felt slower than they are (7 September 2026)
+
+The owner reported weather appearing instantly while fuel, cafes, viewpoints and
+closures took "a considerable delay". Three separate causes, only one of which
+was actually Overpass being slow.
+
+**1. The two Overpass layers were queueing behind each other.**
+`overpass_concurrency` was 1, and the semaphore is process-wide, so the closure
+and POI requests — independent HTTP calls from the browser, fired in parallel —
+serialised server-side. Measured against a stub holding every query 6 s, on a
+route that chunks to one query per layer:
+
+    MOTO_OVERPASS_CONCURRENCY=1  ->  12.0s
+    MOTO_OVERPASS_CONCURRENCY=2  ->   6.0s
+
+Exactly the 2x the serialisation predicts. The default is now 2, which is
+Overpass's documented per-IP allowance rather than a gamble. It was 1 back when
+a 429 was an unhandled crash; 429 is now retried with backoff and rotated onto
+a mirror, so queueing everything costs more than it saves. `MOTO_OVERPASS_CONCURRENCY=1`
+reverts it if the public servers start rate-limiting.
+
+**2. A partial answer was cached for six hours — a bug, and mine.**
+Both layers ran `cache.set(key, result, hazard_ttl_s)` unconditionally, so an
+answer with missing sections was kept for six hours. The note added in the
+previous round tells the rider "press Refresh to try the rest", and Refresh
+would replay the same gaps out of the cache without ever reaching Overpass
+again. The instruction was false the moment it was written. Partial results now
+use `MOTO_PARTIAL_TTL` (300 s). Two tests cover it, and the first was checked
+against the pre-fix code to confirm it actually fails there.
+
+**3. Nothing on screen said the slow layers were working.**
+The only feedback was the Refresh button's label; the fuel and closure panels
+stayed `hidden` until their payload arrived, so on a long route the app looked
+broken for a minute at exactly the moment it was working hardest. Those two
+panels now show a pending line immediately. A panel that already has content —
+a restored ride showing last night's answer — is dimmed instead of emptied,
+because replacing usable data with "Searching…" hides information in order to
+report progress.
+
+The pending `<li>` carries a `pending` class, which matters beyond styling:
+`tools/browser_test.py` waits on `#poi-list li` to decide a layer has loaded,
+and without something to exclude, the placeholder satisfied that wait before
+any data arrived. Every such selector in that file now says `:not(.pending)`.
+
+Verified in headless Chromium against `tools/stub_apis.py` with the new
+`STUB_OVERPASS_DELAY=6`: weather renders while both slow panels show their
+pending line, and the line clears when the real rows land.
+
+**Not addressed.** Chunks within one layer are still strictly sequential in
+`run_chunked`, so a 3-chunk route is 3 round trips deep whatever the
+concurrency. Running them concurrently would interact with the fair-share
+deadline logic and is a bigger change than this round warranted.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
