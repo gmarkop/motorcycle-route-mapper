@@ -27,7 +27,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _env  # noqa: E402
 from moto_route import coverage as coverage_mod  # noqa: E402
 
 #: Places worth knowing the answer for. The Balkan entries are the ones that
@@ -55,17 +57,10 @@ PROBES = [
     ("Tunis, Tunisia", 36.81, 10.17),
 ]
 
-ENV_FILE = "/etc/moto-route.env"
-
-
 def paths_from_env() -> list[str]:
     """MOTO_OVERPASS_COVERAGE_FILES, from the environment or the unit's env file."""
+    _env.load()
     raw = os.environ.get("MOTO_OVERPASS_COVERAGE_FILES", "")
-    if not raw and Path(ENV_FILE).is_file():
-        for line in Path(ENV_FILE).read_text().splitlines():
-            line = line.strip()
-            if line.startswith("MOTO_OVERPASS_COVERAGE_FILES="):
-                raw = line.split("=", 1)[1].strip().strip('"').strip("'")
     return [p.strip() for p in raw.split(",") if p.strip()]
 
 
@@ -84,7 +79,7 @@ def main() -> int:
     paths = args.polys or paths_from_env()
     if not paths:
         print("No coverage files given and none in the environment or "
-              f"{ENV_FILE}.\nPass them as arguments, or set "
+              f"{_env.ENV_FILE}.\nPass them as arguments, or set "
               "MOTO_OVERPASS_COVERAGE_FILES.", file=sys.stderr)
         return 2
 

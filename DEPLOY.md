@@ -376,6 +376,11 @@ cd /opt/moto-route
 .venv/bin/python tools/verify_autobahn.py
 ```
 
+These read `/etc/moto-route.env` themselves, so they test the deployment you
+actually run rather than the defaults — which matters once that file names a
+self-hosted Overpass. Each prints the endpoints it is about to measure, so
+there is never a doubt about which server the timings describe.
+
 Run these **as yourself, without sudo**. They need no privileges — they only
 read a route file and make outbound requests — and running them as the
 `motoroute` service user fails on anything in your home directory, because that

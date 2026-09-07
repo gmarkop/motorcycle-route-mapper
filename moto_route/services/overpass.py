@@ -222,9 +222,15 @@ async def run_query(
                 # Name the host and the reason. "ConnectError" alone tells a
                 # rider nothing about whether to retry, wait, or reconfigure.
                 detail = str(exc).strip() or type(exc).__name__
+                # The advice has to match the server. Telling someone whose own
+                # instance is down that "the public servers refuse connections
+                # when busy" sends them to wait for a problem that will never
+                # clear, when what they need is to start their container.
+                advice = ("Is your own Overpass running?" if _is_local(endpoint)
+                          else "The public Overpass servers refuse connections "
+                               "when busy.")
                 last = OverpassError(
-                    f"Could not connect to {_host(endpoint)} — {detail}. "
-                    "The public Overpass servers refuse connections when busy."
+                    f"Could not connect to {_host(endpoint)} — {detail}. {advice}"
                 )
                 failures.append(f"{_host(endpoint)}: {type(exc).__name__}")
                 response = None
@@ -387,6 +393,14 @@ async def run_chunked(
         "failed_chunks": failed,
         "total_chunks": len(chunks),
     }
+
+
+#: Hostnames that can only mean a server the rider runs themselves.
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]", "::1", "0.0.0.0")
+
+
+def _is_local(url: str) -> bool:
+    return _host(url).split(":")[0] in _LOCAL_HOSTS
 
 
 def _host(url: str) -> str:
