@@ -23,6 +23,7 @@ const state = {
   poiFilter: new Set(['fuel', 'cafe', 'viewpoint']),
   poiPayload: null,
   curvinessOn: false,
+  recoveryError: null,
   servedFromCache: false,
   config: {
     speed_kmh: 65, tank_range_km: 250,
@@ -131,13 +132,35 @@ async function upload(file) {
   }
 }
 
-async function postRoute(file) {
+async function postRoute(file, filename) {
   const body = new FormData();
-  body.append('file', file);
+  // The name is passed explicitly. A File carries its own, but a plain Blob
+  // does not, and the server needs the extension to know how to parse it —
+  // FormData would otherwise call it "blob" and the upload would be rejected
+  // for a reason that has nothing to do with the file's contents.
+  body.append('file', file, filename || file.name || 'route.gpx');
   const response = await fetch('/api/routes', { method: 'POST', body });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Upload failed.');
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(describeUploadFailure(response.status, payload));
+  }
   return payload;
+}
+
+/** A rejected upload, in words a rider can act on. */
+function describeUploadFailure(status, payload) {
+  const detail = payload && payload.detail;
+  if (typeof detail === 'string') return detail;
+  if (status === 422) {
+    // FastAPI's validation error, i.e. the request never reached our own
+    // handler. From here that means the file part was not sent as a file —
+    // a stored ride whose contents did not survive, most likely.
+    return 'The server could not read the uploaded file (422). '
+      + 'If this happened while restoring a saved ride, the saved copy is '
+      + 'unusable — load the GPX again.';
+  }
+  if (status === 413) return 'That file is too large for the server.';
+  return `Upload failed (HTTP ${status}).`;
 }
 
 /** Draw a route and reveal the panels that only make sense once one is loaded. */
@@ -183,7 +206,15 @@ function recoverRouteId() {
       const ride = state.rideKey ? await store.getRide(state.rideKey) : null;
       if (!ride || !ride.file) return false;
 
-      const payload = await postRoute(ride.file);
+      // Checked before sending rather than after being rejected. A record
+      // written by an older version of this app, or one whose contents did not
+      // survive being stored, is not something the server can be asked about.
+      if (!(ride.file instanceof Blob)) {
+        throw new Error('The saved copy of this route cannot be re-sent to the '
+          + 'server. Load the GPX file again.');
+      }
+
+      const payload = await postRoute(ride.file, ride.filename);
       state.routeId = payload.id;
       await store.patchRide(state.rideKey, {
         serverRouteId: payload.id,
@@ -191,7 +222,15 @@ function recoverRouteId() {
       });
       return true;
     })()
-      .catch(() => false)
+      .catch((err) => {
+        // Swallowing this was the actual bug on the owner's box: the server
+        // had forgotten the route, re-sending it failed, and every layer fell
+        // back to last-saved with nothing to say why. Stale data with no
+        // explanation is the one outcome this app is not allowed to produce.
+        state.recoveryError = err.message;
+        console.warn('Could not restore this route on the server:', err);
+        return false;
+      })
       .finally(() => { recovery = null; });
   }
   return recovery;
@@ -284,6 +323,7 @@ async function refreshLiveData() {
 
   const fromCache = outcomes.filter((outcome) => outcome === 'cache').length;
   const live = outcomes.filter((outcome) => outcome === 'live').length;
+  if (live && !fromCache) state.recoveryError = null;
   updateBanner({ fromCache, live });
 
   if (state.inFlight === controller) state.inFlight = null;
@@ -750,7 +790,14 @@ function updateBanner({ fromCache, live }) {
     + `${fromCache} layer${fromCache === 1 ? '' : 's'} could not be refreshed and `
     + `${fromCache === 1 ? 'is' : 'are'} being shown as last saved`
     + (live ? `; ${live} refreshed just now.` : '.')
-    + (offline ? ' The route and map tiles work without a connection.' : '');
+    + (offline ? ' The route and map tiles work without a connection.' : '')
+    // When the server has forgotten the route and re-sending it failed, that
+    // is *the* reason nothing refreshed, and it is not guessable from here.
+    // Saying "could not be refreshed" and stopping was what sent the owner
+    // hunting through journalctl for a fault that was in the browser.
+    + (!offline && state.recoveryError
+        ? `<br><span class="tiny">${escapeHtml(state.recoveryError)}</span>`
+        : '');
   banner.hidden = false;
 }
 
