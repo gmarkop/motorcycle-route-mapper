@@ -505,6 +505,13 @@ connection; the filtering is I/O-bound and modest on RAM.
 It finishes by printing the settings to paste into `/etc/moto-route.env`,
 including the coverage box computed from the data itself.
 
+**List the countries you ride *through*, not the ones you are going to.** A
+Greece-to-Poland trip via Serbia crosses Hungary whether or not Hungary is
+interesting, because Serbia does not border Slovakia. A transit country left
+out of the extract is one where the closure layer falls back to the public
+servers — slower, and on a long route often only partly answered. Trace the
+route on a map and name every border it crosses.
+
 To change which countries are covered, edit `COUNTRIES` at the top of the
 script — they are Geofabrik paths. (Note that Geofabrik still files North
 Macedonia under `europe/macedonia`.) `--only` takes the bare country names from

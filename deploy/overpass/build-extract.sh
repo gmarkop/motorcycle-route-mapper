@@ -49,6 +49,13 @@ COUNTRIES=(
   europe/montenegro
   europe/bulgaria
   europe/romania
+  # Hungary and Slovakia are not destinations, they are the way through:
+  # Serbia does not border Slovakia, so any Balkans-to-Poland ride crosses
+  # Hungary. A country you only transit still needs its closures searched, and
+  # is exactly the one likely to be left out of a list written by thinking
+  # about where the trip is going.
+  europe/hungary
+  europe/slovakia
   europe/poland
   europe/austria
   europe/germany
