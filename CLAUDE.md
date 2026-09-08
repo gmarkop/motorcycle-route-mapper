@@ -493,6 +493,44 @@ that — written to be run on a machine with a network, never run here. Anything
 in `tools/` or `deploy/` needs a way to be exercised locally, however partial,
 or it is being written blind.
 
+### The owner's actual usage decides the timeouts (8 September 2026)
+
+A German route on the phone showed weather and then gave up: Overpass out of
+time, elevation rate-limited. Germany is outside the Greece + Italy coverage,
+so both Overpass layers fell back to the public servers, where the
+corridor-dense coordinate list is expensive — and the 120-second budget, tuned
+for a rider standing at a petrol station, cut it off.
+
+**He does not use it that way.** Routes are consulted the evening before the
+ride, from an armchair. Latency is nearly free; a closure that never appeared
+is not. That single fact settles a question no amount of measurement could:
+when the two conflict, wait rather than truncate.
+
+So the budget follows the server, like the concurrency already did.
+`MOTO_OVERPASS_DEADLINE` (120 s) is for your own instance, which is fast enough
+that it never binds. `MOTO_OVERPASS_PUBLIC_DEADLINE` (600 s) is for a fallback
+route. Note this raises the effective default for anyone with no local server
+from 120 s to 600 s, deliberately.
+
+**Do not "fix" this by thinning the corridor for public routes.** That trades a
+visible wait for an invisible gap, which is the bug this project has already
+spent a week removing.
+
+### Two layers asked for the same heights at once
+
+The 429 was not Open-Meteo being stingy. `/elevation` and `/curviness` are
+separate endpoints the page requests together, and both call
+`elevation.profile` for the same route. Neither has populated the cache when
+the other starts, so both fetched every batch and the second was rate-limited.
+
+`elevation.lookup` now shares the in-flight request: a second caller awaits the
+first rather than repeating it. Batches are also capped at two at a time and a
+429 is retried with backoff, honouring `Retry-After`, instead of being
+surfaced. Verified by removing the sharing and watching the test fail.
+
+A cache alone cannot fix this. Nothing is in it until the first answer returns,
+and the whole problem happens before then.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
