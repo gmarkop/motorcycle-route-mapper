@@ -341,7 +341,8 @@ All optional, all environment variables.
 | `MOTO_OVERPASS_LOCAL_CONCURRENCY` | `8` | Queries in flight against **your own** Overpass, used only for routes inside its coverage |
 | `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
 | `MOTO_OVERPASS_MAX_POINTS` | `60` | Route coordinates per query; longer routes are split into several |
-| `MOTO_OVERPASS_DEADLINE` | `120` | Total seconds one layer may spend on Overpass before returning what it has |
+| `MOTO_OVERPASS_DEADLINE` | `120` | Seconds one layer may spend on **your own** Overpass before returning what it has |
+| `MOTO_OVERPASS_PUBLIC_DEADLINE` | `600` | The same for the public servers — far longer, because a route is planned the evening before, not mid-ride |
 | `MOTO_OVERPASS_QUERY_STYLE` | `filtered` | `filtered` (tag-indexed, 8 passes) or `grouped` (2 passes, large intermediate set) |
 | `MOTO_OVERPASS_FALLBACK_URLS` | one mirror | Other Overpass instances to rotate through; empty disables |
 | `MOTO_OVERPASS_COVERAGE_FILES` | unset | Geofabrik `.poly` boundaries your own Overpass holds; routes outside them use the public servers |

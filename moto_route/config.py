@@ -181,6 +181,17 @@ class Settings:
     #: at the full per-request timeout — while the rider watched an empty panel.
     overpass_deadline_s: float = field(
         default_factory=lambda: _env_float("MOTO_OVERPASS_DEADLINE", 120.0))
+    #: The same budget when the public servers are answering, which they only
+    #: do for a route outside your own instance's coverage.
+    #:
+    #: Far larger, because the situation is different in the way that matters:
+    #: a route is looked at the evening before it is ridden, from an armchair.
+    #: Waiting three minutes for a complete answer beats getting an incomplete
+    #: one in two — the whole point of the layer is the closure you did not
+    #: know about. The short budget exists for a rider at a petrol station, and
+    #: your own server is fast enough that it never binds there.
+    overpass_public_deadline_s: float = field(
+        default_factory=lambda: _env_float("MOTO_OVERPASS_PUBLIC_DEADLINE", 600.0))
     #: Other public Overpass instances to fall back to. The main server drops
     #: connections when it is busy, and a refused connection is precisely the
     #: failure a second endpoint fixes. Comma-separated; set empty to disable.
@@ -284,6 +295,17 @@ class Settings:
                 endpoints.append(url)
         return endpoints
 
+    def deadline_for(self, endpoints: Sequence[str]) -> float:
+        """How long a layer may spend, given which servers will answer it."""
+        if self._is_own_server(endpoints):
+            return self.overpass_deadline_s
+        return self.overpass_public_deadline_s
+
+    def _is_own_server(self, endpoints: Sequence[str]) -> bool:
+        local_configured = bool(self.overpass_coverage_files or self.overpass_coverage)
+        return bool(local_configured and endpoints
+                    and endpoints[0] == self.overpass_url)
+
     def concurrency_for(self, endpoints: Sequence[str]) -> int:
         """How many queries at once, given which servers are about to answer.
 
@@ -291,8 +313,7 @@ class Settings:
         area says so — otherwise the primary *is* a public server and gets the
         public allowance.
         """
-        local_configured = bool(self.overpass_coverage_files or self.overpass_coverage)
-        if local_configured and endpoints and endpoints[0] == self.overpass_url:
+        if self._is_own_server(endpoints):
             return self.overpass_local_concurrency
         return self.overpass_concurrency
 

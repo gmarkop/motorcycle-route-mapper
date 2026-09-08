@@ -252,3 +252,67 @@ def test_a_stretch_is_described_by_its_worst_moment_not_its_mean(settings):
 
     assert len(found) == 1
     assert found[0]["gradient_pct"] == -11.0
+
+
+# ------------------------------------------------ asking once, not layer-twice
+
+async def test_two_layers_asking_together_make_one_set_of_requests(settings, cache, climb):
+    """What produced a 429 on a German route.
+
+    The elevation profile and the curviness heat map are separate endpoints the
+    page requests together, and both need heights for the same route. Neither
+    has populated the cache when the other starts, so without sharing the
+    in-flight lookup both fetch the whole route and Open-Meteo rate-limits the
+    second.
+    """
+    import asyncio
+    calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        n = len(request.url.params["latitude"].split(","))
+        await asyncio.sleep(0.05)          # long enough for the other to start
+        return httpx.Response(200, json={"elevation": [100.0] * n})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        first, second = await asyncio.gather(
+            elevation.profile(climb, [None] * len(climb), settings, client, cache),
+            elevation.profile(climb, [None] * len(climb), settings, client, cache),
+        )
+
+    assert first["available"] and second["available"]
+    assert first["samples"] == second["samples"]
+    assert calls["n"] == 1, f"{calls['n']} requests for one route's heights"
+
+
+async def test_a_rate_limited_lookup_waits_and_retries(monkeypatch, settings, cache, climb):
+    monkeypatch.setattr(elevation, "RETRY_BASE_DELAY", 0)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"}, text="slow down")
+        n = len(request.url.params["latitude"].split(","))
+        return httpx.Response(200, json={"elevation": [100.0] * n})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await elevation.profile(climb, [None] * len(climb),
+                                         settings, client, cache)
+
+    assert result["available"] is True
+    assert attempts["n"] == 2, "the 429 should have been retried, not surfaced"
+
+
+async def test_a_persistent_429_is_explained_not_raised(monkeypatch, settings, cache, climb):
+    monkeypatch.setattr(elevation, "RETRY_BASE_DELAY", 0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "0"}, text="slow down")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await elevation.profile(climb, [None] * len(climb),
+                                         settings, client, cache)
+
+    assert result["available"] is False
+    assert "429" in result["reason"]

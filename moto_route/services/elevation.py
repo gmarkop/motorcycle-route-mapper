@@ -19,6 +19,7 @@ long TTL is that a route you rode last month costs nothing to look at again.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Sequence
 
@@ -32,6 +33,31 @@ log = logging.getLogger(__name__)
 
 #: Open-Meteo takes at most 100 coordinates in one elevation request.
 MAX_PER_REQUEST = 100
+
+#: Elevation batches in flight at once. Open-Meteo is generous but not
+#: unlimited, and a long route is already several requests.
+MAX_CONCURRENT = 2
+
+#: Seconds to wait before retrying a rate-limited batch, doubled each time.
+RETRY_BASE_DELAY = 1.0
+
+#: Lookups already running, keyed by what they are looking up.
+#:
+#: The elevation profile and the curviness heat map are separate endpoints that
+#: the page requests together, and both need heights for the same route. With
+#: only the cache between them, neither has finished by the time the other
+#: starts, so both fetch the whole route and Open-Meteo answers the second one
+#: with 429. Sharing the in-flight lookup makes the second caller wait for the
+#: first instead of duplicating it.
+_inflight: dict[str, "asyncio.Future[list[float]]"] = {}
+_slots: dict[int, asyncio.Semaphore] = {}
+
+
+def _semaphore() -> asyncio.Semaphore:
+    loop = id(asyncio.get_running_loop())
+    if loop not in _slots:
+        _slots[loop] = asyncio.Semaphore(MAX_CONCURRENT)
+    return _slots[loop]
 
 
 class ElevationError(RuntimeError):
@@ -60,6 +86,27 @@ async def lookup(
     if hit is not None:
         return hit
 
+    running = _inflight.get(key)
+    if running is not None:
+        # Someone is already asking this exact question. Wait for their answer
+        # rather than asking it again and being rate-limited for it.
+        return await asyncio.shield(running)
+
+    task = asyncio.ensure_future(_fetch(coords, settings, client, cache, key))
+    _inflight[key] = task
+    try:
+        return await task
+    finally:
+        _inflight.pop(key, None)
+
+
+async def _fetch(
+    coords: Sequence[geo.LatLon],
+    settings: Settings,
+    client: httpx.AsyncClient,
+    cache: TTLCache,
+    key: str,
+) -> list[float]:
     values: list[float] = []
     for start in range(0, len(coords), MAX_PER_REQUEST):
         batch = coords[start : start + MAX_PER_REQUEST]
@@ -67,16 +114,7 @@ async def lookup(
             "latitude": ",".join(f"{lat:.4f}" for lat, _ in batch),
             "longitude": ",".join(f"{lon:.4f}" for _, lon in batch),
         }
-        try:
-            response = await client.get(settings.elevation_url, params=params)
-            response.raise_for_status()
-            payload = response.json()
-        except httpx.HTTPError as exc:
-            raise ElevationError(
-                f"Could not reach the elevation service — {exc}."
-            ) from exc
-        except ValueError as exc:
-            raise ElevationError("The elevation service did not return JSON.") from exc
+        payload = await _one_batch(params, settings, client)
 
         got = payload.get("elevation") if isinstance(payload, dict) else None
         if not isinstance(got, list) or len(got) != len(batch):
@@ -90,6 +128,48 @@ async def lookup(
 
     cache.set(key, values, settings.elevation_ttl_s)
     return values
+
+
+async def _one_batch(params: dict[str, str], settings: Settings,
+                     client: httpx.AsyncClient, attempts: int = 3) -> Any:
+    """One request, retried when the service says it is being asked too often."""
+    delay = RETRY_BASE_DELAY
+    last = "" 
+
+    for attempt in range(attempts):
+        async with _semaphore():
+            try:
+                response = await client.get(settings.elevation_url, params=params)
+            except httpx.HTTPError as exc:
+                raise ElevationError(
+                    f"Could not reach the elevation service — {exc}.") from exc
+
+            if response.status_code != 429:
+                try:
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as exc:
+                    raise ElevationError(
+                        f"The elevation service returned HTTP "
+                        f"{response.status_code}.") from exc
+                except ValueError as exc:
+                    raise ElevationError(
+                        "The elevation service did not return JSON.") from exc
+
+            # 429: backing off is the only useful response, and the server
+            # often says how long for.
+            last = "rate-limited"
+            wait = float(response.headers.get("Retry-After") or delay)
+
+        if attempt < attempts - 1:
+            log.info("Elevation service rate-limited; waiting %.0fs", wait)
+            await asyncio.sleep(wait)
+            delay *= 2
+
+    raise ElevationError(
+        "The elevation service is rate-limiting this address (429). "
+        f"It settled after {attempts} attempts ({last}); heights will be "
+        "available again shortly.")
 
 
 def gradients(samples: Sequence[tuple[float, float]]) -> list[float]:
