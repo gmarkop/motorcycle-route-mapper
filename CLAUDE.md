@@ -30,6 +30,40 @@ Measured on the 389 km Pavliani route:
 Every endpoint is measured in turn so the fallback's behaviour is known; a
 Greek or Italian route never reaches them. Do not go looking for a bug there.
 
+### Next session: build the full extract (planned 8 September, to run 9th)
+
+Two real trips are now driving the coverage, and between them they want nearly
+every configured country:
+
+* **June 2027, Greece to Poland** — via North Macedonia, Serbia, Hungary,
+  Slovakia; back through Romania and Bulgaria. Hungary and Slovakia were added
+  for this: the owner named the countries he is *going to*, and Serbia does not
+  border Slovakia.
+* **Germany** — Igoumenitsa-Venice ferry, then Austria, Germany, Belgium,
+  Luxembourg, Switzerland. All already configured; France covers the
+  Luxembourg-Switzerland leg, since those two do not border each other.
+
+**The box is the constraint: 1.9 GiB RAM, 2.9 GiB swap, 134 GB disk.** That is
+under the 4 GB the Overpass image documents as its minimum, and 17 countries is
+roughly 18 GB of downloads filtering to ~200 MB — about eight times the only
+import that has ever succeeded there.
+
+The agreed plan:
+
+1. Add a temporary 8 GB swapfile before importing, removed afterwards. Cheap,
+   and swap is what decides whether the sort completes.
+2. Download and filter all 17 in one run (disk and time only, no memory risk).
+3. Import in two stages, because once every country is filtered the merge
+   always includes all of them: `--only` the Poland trip's eight first, verify
+   it serves, then the full build. Costs one extra import, and leaves a working
+   eight-country server if the large one is killed.
+4. Watch for the OOM killer: `sudo dmesg -T | grep -i "killed process"`. If it
+   names `update_database`, fall back to the eight and treat Germany's
+   countries as a separate build nearer that trip.
+
+Rebuild both extracts in **May 2027**: `OVERPASS_META=no` means no incremental
+updates, so data is frozen at build time and roadworks are exactly what moves.
+
 ### Immediately next, both unblocked
 
 1. **POI categories** — motorcycle shops (`shop=motorcycle`,
