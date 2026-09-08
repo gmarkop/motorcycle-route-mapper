@@ -390,9 +390,14 @@ def _interpolate_along(points: Sequence[LatLon], spacing_m: float) -> list[LatLo
 
     :func:`sample_every` can only return coordinates the route already has, so
     it cannot close a gap: a GPX whose points are 2 km apart still yields 2 km
-    gaps. New points are interpolated along each segment instead. Where the
-    road between two recorded points is unknown, the straight line between them
-    is what the file itself asserts, so it is the honest estimate.
+    gaps. New points are interpolated along each segment instead. Over a short
+    segment the straight line is a fair stand-in for the road, and that is what
+    the file itself asserts.
+
+    Deciding *which* segments are worth filling is the caller's job, because
+    the answer depends on the recorded spacing and this function is handed a
+    simplified line, where a 20 km chord may mean either "the road is straight
+    here" or "the file says nothing here".
     """
     out: list[LatLon] = [points[0]]
     for a, b in zip(points, points[1:]):
@@ -412,6 +417,7 @@ def corridor_points(
     points: Sequence[LatLon],
     radius_m: float,
     max_points: int | None = None,
+    max_span_m: float = 5000.0,
 ) -> list[LatLon]:
     """Coordinates whose corridor genuinely covers the route.
 
@@ -440,6 +446,35 @@ def corridor_points(
     if len(points) < 2:
         return list(points)
 
+    # Split where the file itself goes quiet, and treat each run separately.
+    #
+    # Two *recorded* points far apart say nothing about what lies between them:
+    # the ferry from Igoumenitsa to Venice is one 925 km segment, and filling
+    # that line would ask Overpass about 4,113 coordinates of open Adriatic in
+    # 69 chunks. On land the same holds — a chord across 50 km of countryside
+    # is not the road, and a corridor along it searches the wrong ground.
+    #
+    # The test has to be on the recorded spacing, not on the simplified line.
+    # Simplifying collapses a genuinely straight 20 km road to its two ends,
+    # and a chord that long then looks identical to a gap the file never
+    # described. Getting that backwards dropped a well-described straight road
+    # from 90 coordinates to 2.
+    runs: list[list[LatLon]] = [[points[0]]]
+    for a, b in zip(points, points[1:]):
+        if haversine_m(a, b) > max_span_m:
+            runs.append([b])
+        else:
+            runs[-1].append(b)
+
+    if len(runs) > 1:
+        out: list[LatLon] = []
+        for run in runs:
+            out.extend(corridor_points(run, radius_m, max_span_m=max_span_m))
+        if max_points is not None and len(out) > max_points:
+            step = len(out) / max_points
+            out = [out[int(i * step)] for i in range(max_points)]
+        return out
+
     # Thin first, then fill the gaps thinning left. The other order keeps every
     # recorded point on a straight road — a 1 Hz track log would send thousands
     # of coordinates 10 m apart to cover a corridor that needs one every 225 m.
@@ -448,7 +483,6 @@ def corridor_points(
     # line through these coordinates, so a cut curve stays inside the corridor.
     thinned = simplify(points, max(radius_m * 0.5, 1.0))
 
-    # Then no gap wider than the circles can bridge.
     merged = _interpolate_along(thinned, max(radius_m * 1.5, 1.0))
 
     if max_points is not None and len(merged) > max_points:

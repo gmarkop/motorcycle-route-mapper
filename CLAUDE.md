@@ -493,6 +493,33 @@ that — written to be run on a machine with a network, never run here. Anything
 in `tools/` or `deploy/` needs a way to be exercised locally, however partial,
 or it is being written blind.
 
+### A ferry is not a road (8 September 2026)
+
+The owner's second 2027 trip takes the Igoumenitsa-Venice ferry. A converter's
+GPX renders that as two points 925 km apart, and `corridor_points` dutifully
+filled the line: **4,113 coordinates in 69 Overpass chunks of open Adriatic** —
+more than the entire 389 km Pavliani route, every chunk certain to find
+nothing.
+
+Waste was not the real problem. Two recorded points that far apart say nothing
+about what lies between them, so interpolating the chord invents geography.
+The same holds on land: a straight line across 50 km of countryside is not the
+road, and a 150 m corridor along it searches the wrong ground entirely.
+
+`corridor_points` now splits the route wherever consecutive *recorded* points
+are more than `max_span_m` (5 km) apart and treats each run separately. The
+ferry leg keeps its two endpoints; both land legs are filled normally.
+
+**The subtlety that broke the first attempt.** Testing the span inside
+`_interpolate_along` looked equivalent and was not: by then the line has been
+simplified, and simplification collapses a genuinely straight 20 km road to its
+two endpoints. That chord is indistinguishable from a gap the file never
+described, so a well-described straight road went from 90 coordinates to 2 —
+reintroducing exactly the silent corridor gap this project spent a week
+removing. The test has to be on the *recorded* spacing, before simplification.
+`test_a_straight_road_described_by_the_file_is_still_filled` exists to hold
+that line.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded

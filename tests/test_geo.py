@@ -184,3 +184,56 @@ def test_curviness_separates_a_motorway_from_a_pass():
 def test_curviness_of_a_degenerate_line_is_zero():
     assert geo.curviness_deg_per_km([(48.0, 11.0)]) == 0.0
     assert geo.curviness_deg_per_km([(48.0, 11.0), (48.1, 11.0)]) == 0.0
+
+
+# ------------------------------------------- corridor coordinates across gaps
+
+IGOUMENITSA = (39.504, 20.265)
+VENICE = (45.434, 12.339)
+
+
+def test_a_ferry_leg_is_not_filled_with_coordinates():
+    """925 km of open Adriatic is not a road.
+
+    Two recorded points that far apart say nothing about what lies between, so
+    interpolating the line invents geography: it asked Overpass about 4,113
+    coordinates of sea in 69 chunks, every one of them certain to find nothing.
+    """
+    out = geo.corridor_points([IGOUMENITSA, VENICE], 150.0)
+
+    assert out == [IGOUMENITSA, VENICE]
+
+
+def test_the_roads_either_side_of_a_ferry_are_still_searched():
+    before = [(39.50 + i * 0.002, 20.26) for i in range(60)]
+    after = [(45.43 + i * 0.002, 12.33) for i in range(60)]
+
+    out = geo.corridor_points(before + after, 150.0)
+
+    gaps = [geo.haversine_m(a, b) for a, b in zip(out, out[1:])]
+    on_road = [g for g in gaps if g <= 5000]
+    assert max(on_road) <= 300, "a land leg was left with a gap in its corridor"
+    assert len(out) > 100, "the land legs were not filled at all"
+
+
+def test_a_straight_road_described_by_the_file_is_still_filled():
+    """The distinction the split has to get right.
+
+    Simplifying collapses a genuinely straight 20 km road to its two ends, so
+    the chord then looks exactly like a gap the file never described. Testing
+    the simplified line rather than the recorded one dropped this road from 90
+    coordinates to 2.
+    """
+    road = [(38.0 + i * 0.018, 22.0) for i in range(11)]      # points 2 km apart
+
+    out = geo.corridor_points(road, 150.0)
+
+    gaps = [geo.haversine_m(a, b) for a, b in zip(out, out[1:])]
+    assert max(gaps) <= 300, f"{max(gaps):.0f} m gap in a 150 m corridor"
+    assert len(out) > 50
+
+
+def test_the_gap_threshold_is_adjustable():
+    hop = [(38.0, 22.0), (38.0, 22.1)]        # ~8.8 km apart
+    assert len(geo.corridor_points(hop, 150.0, max_span_m=1000.0)) == 2
+    assert len(geo.corridor_points(hop, 150.0, max_span_m=20000.0)) > 20
