@@ -322,9 +322,20 @@ More log filters, and how to reach all of this from the tablet, are under
 
 ```bash
 cd ~/motorcycle-route-mapper
-git pull
-sudo deploy/install.sh               # re-run; it updates in place
+git fetch origin && git pull
+sudo deploy/install.sh               # re-run; it updates in place and restarts
+systemctl status moto-route --no-pager | head -3
 ```
+
+`git pull` updates your checkout. It does **not** update the running service —
+that runs from `/opt/moto-route`, which only changes when the installer copies
+to it. Pulling without reinstalling leaves the service on the old code, and
+nothing says so.
+
+The installer prints `restarted: PID <old> -> <new>`. A changed PID is the
+proof the running process is the code you just installed; that line exists
+because an earlier version used `systemctl enable --now`, which only *starts* a
+stopped unit and silently leaves a running one alone.
 
 **Uninstalling:**
 

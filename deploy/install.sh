@@ -94,11 +94,29 @@ else
 fi
 
 say "Starting the service"
+was_running=$(systemctl is-active "$UNIT_NAME" 2>/dev/null || true)
+before=$(systemctl show -p MainPID --value "$UNIT_NAME" 2>/dev/null || echo 0)
+
 systemctl daemon-reload
-systemctl enable --now "$UNIT_NAME"
+systemctl enable "$UNIT_NAME" >/dev/null 2>&1 || true
+# restart, not `enable --now`. `--now` only *starts* a stopped unit, so
+# re-running this installer against a live service copied the new code and left
+# the old process serving the old one -- while printing "Running." in green.
+# Days of measurements were taken against code that had been replaced on disk.
+systemctl restart "$UNIT_NAME"
 sleep 2
 
+after=$(systemctl show -p MainPID --value "$UNIT_NAME" 2>/dev/null || echo 0)
+
 if systemctl is-active --quiet "$UNIT_NAME"; then
+  if [ "$was_running" = "active" ] && [ "$before" = "$after" ]; then
+    # Should not happen, but a silent no-op here is exactly the failure this
+    # change exists to remove, so it is worth saying out loud.
+    echo "  WARNING: the service kept PID $after — it may still be running the"
+    echo "           code that was there before. Try: sudo systemctl restart $UNIT_NAME"
+  else
+    echo "  restarted: PID $before -> $after"
+  fi
   printf '\n\033[32mRunning.\033[0m http://127.0.0.1:%s\n\n' "$PORT"
   echo "It is bound to loopback on purpose — this app has no authentication."
   echo "To reach it from your tablet, put Tailscale in front:"
