@@ -14,6 +14,25 @@ Owner: gmarkop. Repo: `gmarkop/motorcycle-route-mapper` (**private**).
 and the whole self-hosted Overpass chapter. The owner runs it on a 2 GB Debian
 box behind Tailscale.
 
+### The app works end to end (9 September 2026)
+
+Athens-Volos, 295 km, 18,078 recorded points, every layer through the running
+app on the owner's 2 GB Debian box:
+
+    curviness 5.3s   elevation 4.7s   alternates 3.6s   incidents 3.1s
+    hazards   3.0s   pois      2.3s   weather    0.3s
+    all layers together: 5.3s
+
+Against **56.6 s** earlier the same day, and against a version that showed
+weather and nothing else. Three faults, found in this order and each hidden by
+the one before it: layers blocking the event loop (the route index), the
+elevation layer spending a whole minute's API allowance (halved the samples),
+and before both, a corridor that searched a fraction of the road.
+
+The `--app` timing mode is what found them. Service checks answer "is Overpass
+fast?"; only timing the layers together answers "why am I waiting", and those
+two questions had silently come apart.
+
 ### The self-hosted Overpass is live and is the headline result
 
 A tag-filtered Greece + Italy extract — 25 MB from ~2.3 GB of country data —
@@ -621,11 +640,12 @@ every ~500 m. A short sharp ramp is smoothed away; a mountain pass, which is
 what the demanding-stretches panel exists for, is not. A self-hosted terrain
 model would lift the limit entirely if that ever matters.
 
-**The inference is not certain.** Open-Meteo documents that the weighting
-exists but not its exact form, so "600 samples = 600 weighted calls" is read
-from their guidance plus the symptom, not from a specification. The fix is
-cheap and reversible: if 429s persist at 300, the weighting is not the
-mechanism and something else is.
+**Confirmed on the box.** Open-Meteo documents that the weighting exists but
+not its exact form, so "600 samples = 600 weighted calls" was read from their
+guidance plus the symptom rather than from a specification — and the test was
+stated in advance: if 429s persisted at 300 the weighting was not the
+mechanism. They did not. Elevation passed at 4.7 s on the route that had failed
+every previous load.
 
 ### Open ideas, nothing agreed
 
