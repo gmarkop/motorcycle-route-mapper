@@ -200,7 +200,9 @@ def _elements_to_hazards(
     route_points: Sequence[geo.LatLon],
     settings: Settings,
 ) -> list[Hazard]:
-    cumulative = geo.cumulative_distances(route_points)
+    # Built once for the whole batch. Scanning every segment per vertex is
+    # what made this layer block the event loop for the best part of a minute.
+    index = geo.RouteIndex(route_points, settings.hazard_corridor_m * 2)
     hazards: list[Hazard] = []
 
     for element in elements:
@@ -209,7 +211,7 @@ def _elements_to_hazards(
         if not geometry:
             continue
 
-        placement = _project_onto_route(geometry, route_points, cumulative)
+        placement = _project_onto_route(geometry, index)
         if placement is None:
             continue
         point, off_route_m, along_m = placement
@@ -265,8 +267,7 @@ def _element_geometry(element: dict[str, Any]) -> list[geo.LatLon]:
 
 def _project_onto_route(
     geometry: Sequence[geo.LatLon],
-    route_points: Sequence[geo.LatLon],
-    cumulative: Sequence[float],
+    index: geo.RouteIndex,
 ) -> tuple[geo.LatLon, float, float] | None:
     """Find where a hazard touches the route.
 
@@ -277,15 +278,13 @@ def _project_onto_route(
     best: tuple[geo.LatLon, float, float] | None = None
 
     for vertex in geometry:
-        off = geo.distance_to_polyline_m(vertex, route_points)
-        if best is not None and off >= best[1]:
-            continue
-        # Nearest route vertex is precise enough for a "km along" readout.
-        nearest_index = min(
-            range(len(route_points)),
-            key=lambda i: geo.haversine_m(vertex, route_points[i]),
-        )
-        best = (vertex, off, cumulative[nearest_index])
+        # One index lookup gives both answers. The old pair -- a full polyline
+        # scan for the distance, then a full scan again for the nearest vertex
+        # -- was two passes over every point of the route, per vertex, per
+        # hazard.
+        off, along = index.project(vertex)
+        if best is None or off < best[1]:
+            best = (vertex, off, along)
 
     return best
 
