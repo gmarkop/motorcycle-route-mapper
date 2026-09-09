@@ -520,6 +520,13 @@ function wireOffline() {
       cacheButton.disabled = true;
       return;
     }
+    if (!tiles.controlling()) {
+      // Registered but not controlling this page yet. Saying so beats leaving
+      // "Checking…" on screen indefinitely, which reads as a hang.
+      status.textContent = 'Offline caching will be ready after a reload.';
+      cacheButton.disabled = true;
+      return;
+    }
     tiles.requestStats();
   });
 
