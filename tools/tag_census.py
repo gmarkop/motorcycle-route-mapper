@@ -156,7 +156,8 @@ def report(elements, route, radius_m: float, partial: bool) -> None:
               f"Re-run on a shorter route or a narrower --radius.")
 
 
-def public_settings(url: str, settings: Settings) -> Settings:
+def public_settings(url: str, settings: Settings,
+                    max_points: int | None = None) -> Settings:
     """Settings that ask `url` and nothing else, treated as the public server.
 
     Clearing the coverage matters, and cost a Dolomites run to learn.
@@ -174,15 +175,16 @@ def public_settings(url: str, settings: Settings) -> Settings:
     return Settings(overpass_url=url, overpass_fallback_urls=[],
                     overpass_coverage_files=[], overpass_coverage=None,
                     overpass_concurrency=settings.overpass_concurrency,
+                    overpass_max_points=max_points or settings.overpass_max_points,
                     overpass_timeout_s=300,
                     overpass_public_deadline_s=900.0)
 
 
 async def census(route, settings: Settings, url: str, radius_m: float,
-                 client: httpx.AsyncClient) -> int:
+                 client: httpx.AsyncClient, max_points: int | None = None) -> int:
+    single = public_settings(url, settings, max_points)
     points = geo.corridor_points(route.all_latlon, radius_m)
-    chunks = overpass.chunk_coordinates(points, settings.overpass_max_points)
-    single = public_settings(url, settings)
+    chunks = overpass.chunk_coordinates(points, single.overpass_max_points)
 
     print(f"\n{route.name}: {route.distance_m / 1000:.0f} km, "
           f"{radius_m:.0f} m corridor, {len(chunks)} chunk(s) via "
@@ -198,6 +200,14 @@ async def census(route, settings: Settings, url: str, radius_m: float,
             chunk, single, radius_m), single, client)
     except overpass.OverpassError as exc:
         print(f"\n  failed: {exc}", file=sys.stderr)
+        # The app's advice ("a shorter route") is the wrong lever here: the
+        # census is measuring a route on purpose. Cost is driven by the area
+        # searched and the coordinates per query, and both are flags.
+        print(f"  the corridor is what costs. Try a smaller area "
+              f"(--radius {radius_m / 2:.0f}) or smaller queries "
+              f"(--max-points {max(single.overpass_max_points // 3, 5)}).\n"
+              f"  A narrower radius makes the counts incomparable with other "
+              f"routes; smaller chunks do not.", file=sys.stderr)
         return 1
 
     elements = result.get("elements", [])
@@ -240,6 +250,10 @@ async def main() -> int:
                              "server that is not your own)")
     parser.add_argument("--radius", type=float, default=1000.0,
                         help="Corridor in metres (default 1000, as for fuel)")
+    parser.add_argument("--max-points", type=int, default=None,
+                        help="Coordinates per query (default from settings). "
+                             "Fewer means more, cheaper queries -- the remedy "
+                             "for a dense region timing out")
     parser.add_argument("--dry-run", action="store_true",
                         help="Build the queries and print the plan; send nothing")
     args = parser.parse_args()
@@ -256,7 +270,8 @@ async def main() -> int:
         return 2
 
     if args.dry_run:
-        return dry_run(route, settings, args.radius)
+        return dry_run(route, public_settings(settings.overpass_url, settings,
+                                              args.max_points), args.radius)
 
     url = args.url or next(
         (u for u in settings.overpass_endpoints if not overpass._is_local(u)), None)
@@ -269,7 +284,8 @@ async def main() -> int:
 
     async with httpx.AsyncClient(headers={"User-Agent": settings.user_agent},
                                  follow_redirects=True) as client:
-        return await census(route, settings, url, args.radius, client)
+        return await census(route, settings, url, args.radius, client,
+                            args.max_points)
 
 
 if __name__ == "__main__":
