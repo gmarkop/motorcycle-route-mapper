@@ -34,9 +34,13 @@ log = logging.getLogger(__name__)
 #: Open-Meteo takes at most 100 coordinates in one elevation request.
 MAX_PER_REQUEST = 100
 
-#: Elevation batches in flight at once. Open-Meteo is generous but not
-#: unlimited, and a long route is already several requests.
-MAX_CONCURRENT = 2
+#: Elevation batches in flight at once.
+#:
+#: One, not two. The free tier's limit is weighted by coordinates rather than
+#: requests, so running batches in parallel does not reduce what a route costs
+#: — it only spends it faster, in a burst, which is the shape most likely to be
+#: refused.
+MAX_CONCURRENT = 1
 
 #: Seconds to wait before retrying a rate-limited batch, doubled each time.
 RETRY_BASE_DELAY = 1.0

@@ -112,11 +112,23 @@ class Settings:
     #: requests rather than hundreds.
     elevation_sample_m: float = field(
         default_factory=lambda: _env_float("MOTO_ELEVATION_SAMPLE_M", 250.0))
-    #: Hard cap on samples, which is also a cap on requests: Open-Meteo takes
-    #: 100 coordinates at a time, so 600 samples is six calls however long the
-    #: route. Past this the spacing widens instead of the route being truncated.
+    #: Hard cap on samples. Past this the spacing widens rather than the route
+    #: being truncated.
+    #:
+    #: This is a rate limit, not a quality judgement. Open-Meteo's free tier
+    #: allows 600 calls a minute, and a request carrying many coordinates is
+    #: counted as though those coordinates had been fetched in a loop — so 600
+    #: samples spends the whole minute's allowance in one layer, and a route
+    #: was rate-limited on every single load. 300 leaves room for the weather
+    #: layer and for looking at a second route.
+    #:
+    #: The cost is resolution: on a 295 km route this is a height every ~1 km
+    #: rather than every ~500 m, so a short sharp ramp is smoothed away while a
+    #: mountain pass, which is what the demanding-stretches panel is for, is
+    #: not. Raise it if you self-host a terrain model and the limit stops
+    #: applying.
     max_elevation_samples: int = field(
-        default_factory=lambda: _env_int("MOTO_MAX_ELEVATION_SAMPLES", 600))
+        default_factory=lambda: _env_int("MOTO_MAX_ELEVATION_SAMPLES", 300))
     #: Curviness at or above which a stretch counts as demanding, in deg/km.
     #: 130 is where the frontend's own labels switch from "flowing" to
     #: "twisty", so the two agree rather than each having their own opinion.
