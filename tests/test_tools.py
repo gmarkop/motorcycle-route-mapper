@@ -164,3 +164,32 @@ def test_the_census_says_when_the_cap_truncated_it(capsys):
                   1000.0, partial=False)
 
     assert "CAP REACHED" in capsys.readouterr().out
+
+
+def test_the_census_flags_features_it_could_not_classify(capsys):
+    """The query and the classifier come from one list, so this should be empty.
+
+    A feature matching no candidate means a selector is wider than the
+    candidate it was written for -- the counts would then not add up to the
+    features returned, which is the check that validated the Athens-Volos run.
+    """
+    census = _import_tag_census()
+    elements = [{"tags": {"amenity": "fuel"}},
+                {"tags": {"leisure": "pitch", "name": "Not Asked For"}}]
+
+    census.report(elements, SimpleNamespace(name="T", distance_m=100_000.0),
+                  1000.0, partial=False)
+    out = capsys.readouterr().out
+
+    assert "1 feature(s) matched no candidate" in out
+    assert "Not Asked For" in out
+
+
+def test_a_clean_census_says_nothing_about_classification(capsys):
+    census = _import_tag_census()
+
+    census.report([{"tags": {"amenity": "fuel"}}],
+                  SimpleNamespace(name="T", distance_m=100_000.0),
+                  1000.0, partial=False)
+
+    assert "matched no candidate" not in capsys.readouterr().out
