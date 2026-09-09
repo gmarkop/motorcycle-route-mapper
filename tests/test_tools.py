@@ -227,3 +227,31 @@ def test_keeping_the_coverage_would_reproduce_the_bug(monkeypatch):
                             overpass_fallback_urls=[])
 
     assert naive.deadline_for(naive.overpass_endpoints) == naive.overpass_deadline_s
+
+
+def test_smaller_chunks_make_more_and_cheaper_queries():
+    """The lever for a region too dense to answer in one query."""
+    wide = run(str(TOOLS / "tag_census.py"), "--dry-run")
+    narrow = run(str(TOOLS / "tag_census.py"), "--dry-run", "--max-points", "20")
+
+    assert wide.returncode == 0 and narrow.returncode == 0, narrow.stderr
+
+    def chunks(out: str) -> int:
+        line = next(l for l in out.splitlines() if "chunk(s) of at most" in l)
+        return int(line.split("->")[1].split()[0])
+
+    def kilobytes(out: str) -> float:
+        line = next(l for l in out.splitlines() if "query size:" in l)
+        return float(line.split(":")[1].split()[0])
+
+    assert chunks(narrow.stdout) > chunks(wide.stdout)
+    assert kilobytes(narrow.stdout) < kilobytes(wide.stdout)
+
+
+def test_the_chunk_size_reaches_the_query_not_just_the_plan():
+    """--max-points must change what is sent, not only what is printed."""
+    census = _import_tag_census()
+    single = census.public_settings("https://overpass.kumi.systems/api/interpreter",
+                                    census.Settings(), 20)
+
+    assert single.overpass_max_points == 20
