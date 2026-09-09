@@ -316,3 +316,26 @@ async def test_a_persistent_429_is_explained_not_raised(monkeypatch, settings, c
 
     assert result["available"] is False
     assert "429" in result["reason"]
+
+
+async def test_a_long_route_stays_inside_the_minute_allowance(tmp_path, cache):
+    """Open-Meteo's free tier allows 600 calls a minute and counts a request's
+    coordinates as though each were a call. A layer that spends the whole
+    allowance is rate-limited on every load, which is what happened."""
+    settings = Settings(cache_dir=tmp_path)
+    long_route = [(38.0 + i * 0.0002, 23.7) for i in range(20000)]
+    coordinates = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        n = len(request.url.params["latitude"].split(","))
+        coordinates["n"] += n
+        return httpx.Response(200, json={"elevation": [100.0] * n})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await elevation.profile(long_route, [None] * len(long_route),
+                                         settings, client, cache)
+
+    assert result["available"] is True
+    assert coordinates["n"] <= 300, (
+        f"{coordinates['n']} coordinates for one route — half the minute's "
+        "allowance is the budget, so a second route still works")

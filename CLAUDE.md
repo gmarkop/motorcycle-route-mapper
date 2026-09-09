@@ -600,6 +600,33 @@ Still worth doing: the remaining synchronous work should move off the event
 loop with `asyncio.to_thread`, so that a genuinely expensive layer delays only
 itself. The index removed the pain; it did not remove the coupling.
 
+### The elevation 429 was arithmetic, not bad luck
+
+After the route index took the app from 56.6 s to 8.2 s, elevation was the last
+failing layer — still rate-limited, still 429, on every load of a new route.
+
+Open-Meteo's free tier allows 600 calls a minute, and a request carrying many
+coordinates is counted as though those coordinates had been fetched in a loop.
+`max_elevation_samples` was **600**. One layer, on one route, spent the entire
+minute's allowance — so it was refused every time, never cached a result, and
+therefore failed again on the next load. It could not have worked.
+
+Now 300, which leaves room for the weather layer and for looking at a second
+route. `MAX_CONCURRENT` also drops from 2 to 1: with a coordinate-weighted
+limit, parallel batches do not reduce what a route costs, only how fast it is
+spent, and a burst is the shape most likely to be refused.
+
+The cost is resolution — a height every ~1 km on a 295 km route rather than
+every ~500 m. A short sharp ramp is smoothed away; a mountain pass, which is
+what the demanding-stretches panel exists for, is not. A self-hosted terrain
+model would lift the limit entirely if that ever matters.
+
+**The inference is not certain.** Open-Meteo documents that the weighting
+exists but not its exact form, so "600 samples = 600 weighted calls" is read
+from their guidance plus the symptom, not from a specification. The fix is
+cheap and reversible: if 429s persist at 300, the weighting is not the
+mechanism and something else is.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded
