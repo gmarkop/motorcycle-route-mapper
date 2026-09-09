@@ -156,20 +156,40 @@ def report(elements, route, radius_m: float, partial: bool) -> None:
               f"Re-run on a shorter route or a narrower --radius.")
 
 
+def public_settings(url: str, settings: Settings) -> Settings:
+    """Settings that ask `url` and nothing else, treated as the public server.
+
+    Clearing the coverage matters, and cost a Dolomites run to learn.
+    `_is_own_server` asks whether coverage is configured *and* the primary
+    endpoint is the configured `overpass_url` -- and for a one-endpoint
+    Settings the second test is true by construction. On a box with a local
+    extract, `_env.load()` fills the coverage from the environment, so the
+    census was handed the local 120 s deadline and local concurrency while
+    talking to a public server. Greece answered inside 120 s and hid it; the
+    Alps, where every valley is mapped as a hotel, did not.
+
+    The query timeout goes up for the same reason. A 900 s client deadline
+    buys nothing while the header still tells Overpass to give up at 90 s.
+    """
+    return Settings(overpass_url=url, overpass_fallback_urls=[],
+                    overpass_coverage_files=[], overpass_coverage=None,
+                    overpass_concurrency=settings.overpass_concurrency,
+                    overpass_timeout_s=300,
+                    overpass_public_deadline_s=900.0)
+
+
 async def census(route, settings: Settings, url: str, radius_m: float,
                  client: httpx.AsyncClient) -> int:
     points = geo.corridor_points(route.all_latlon, radius_m)
     chunks = overpass.chunk_coordinates(points, settings.overpass_max_points)
-    # A dedicated Settings so the census cannot be answered by the local
-    # extract through a fallback, which is the whole point of the tool.
-    single = Settings(overpass_url=url, overpass_fallback_urls=[],
-                      overpass_concurrency=settings.overpass_concurrency,
-                      overpass_public_deadline_s=900.0)
+    single = public_settings(url, settings)
 
     print(f"\n{route.name}: {route.distance_m / 1000:.0f} km, "
           f"{radius_m:.0f} m corridor, {len(chunks)} chunk(s) via "
           f"{overpass._host(url)}")
-    print("  asking now; a long route on a public server takes minutes")
+    print(f"  {single.deadline_for(single.overpass_endpoints):.0f}s budget, "
+          f"{single.concurrency_for(single.overpass_endpoints)} at a time; "
+          f"a dense route on a public server takes minutes")
 
     try:
         # run_chunked de-duplicates by (type, id), so a feature sitting on the

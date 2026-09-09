@@ -193,3 +193,37 @@ def test_a_clean_census_says_nothing_about_classification(capsys):
                   1000.0, partial=False)
 
     assert "matched no candidate" not in capsys.readouterr().out
+
+
+def test_the_census_is_not_given_local_timeouts_for_a_public_server(monkeypatch):
+    """The Dolomites regression.
+
+    On a box with a local extract the environment sets the coverage, and
+    `_is_own_server` then only has to see the primary endpoint equal
+    `overpass_url` -- which a one-endpoint Settings satisfies by construction.
+    The census was handed the 120 s local deadline for a public server.
+    """
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", "34.8,6.3,47.2,29.6")
+    census = _import_tag_census()
+    configured = census.Settings()
+    assert configured.overpass_coverage, "the box's environment, reproduced"
+
+    single = census.public_settings("https://overpass.kumi.systems/api/interpreter",
+                                    configured)
+    endpoints = single.overpass_endpoints
+
+    assert single.deadline_for(endpoints) == 900.0
+    assert single.concurrency_for(endpoints) == configured.overpass_concurrency
+    # A client deadline buys nothing if the header tells Overpass to stop first.
+    assert single.overpass_timeout_s >= 300
+
+
+def test_keeping_the_coverage_would_reproduce_the_bug(monkeypatch):
+    """Why public_settings clears the coverage, rather than only the fallbacks."""
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", "34.8,6.3,47.2,29.6")
+    census = _import_tag_census()
+
+    naive = census.Settings(overpass_url="https://overpass.kumi.systems/api/interpreter",
+                            overpass_fallback_urls=[])
+
+    assert naive.deadline_for(naive.overpass_endpoints) == naive.overpass_deadline_s
