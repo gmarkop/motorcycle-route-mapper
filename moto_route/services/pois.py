@@ -257,7 +257,11 @@ def _elements_to_pois(
     route_points: Sequence[geo.LatLon],
     settings: Settings,
 ) -> list[Poi]:
-    cumulative = geo.cumulative_distances(route_points)
+    widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
+                 settings.viewpoint_corridor_m)
+    # Reach covers the widest corridor and the 1.5x slack applied below, so a
+    # point the filter would keep is never reported as out of reach.
+    index = geo.RouteIndex(route_points, widest * 2)
     corridor = {
         "fuel": settings.fuel_corridor_m,
         "cafe": settings.cafe_corridor_m,
@@ -275,7 +279,7 @@ def _elements_to_pois(
         if position is None:
             continue
 
-        off_route, along_route = geo.project_onto_polyline(position, route_points, cumulative)
+        off_route, along_route = index.project(position)
         # Overpass measured against the simplified query line; re-check against
         # the real one, with slack for the simplification itself.
         if off_route > corridor[category] * 1.5:

@@ -565,6 +565,41 @@ surfaced. Verified by removing the sharing and watching the test fail.
 A cache alone cannot fix this. Nothing is in it until the first answer returns,
 and the whole problem happens before then.
 
+### Every layer took 51 seconds because one of them held the loop
+
+The `--app` timing mode, added because the service checks and the rider's
+experience had stopped agreeing, gave the answer in one run on a 295 km Greek
+route:
+
+    curviness  56.6s   elevation 56.1s   weather 52.7s   alternates 51.7s
+    incidents  51.2s   hazards   51.0s   pois    50.5s
+
+Everything lands together at ~51 s — including `incidents`, which for a Greek
+route returns "no feed covers this route" without touching the network, and
+`pois`, whose Overpass query measured 1.1 s. Layers doing no work waited exactly
+as long as layers doing all of it. That shape is not seven slow layers; it is
+one thing holding the event loop while the rest queue.
+
+Profiled on an 18,078-point route: `_elements_to_pois` 5.3 s and
+`_elements_to_hazards` 8.9 s, both pure CPU inside async handlers. 235 fuel
+stops against 18,000 segments is four million distance tests, and the hazard
+path was worse — a full polyline scan for the distance, then a *second* full
+scan for the nearest vertex, per vertex, per hazard. The owner's box is slower
+than the machine this was measured on, which is how 14 s becomes 51.
+
+`geo.RouteIndex` buckets segments into a grid sized to the caller's reach, so a
+lookup tests the containing cell and its eight neighbours instead of the whole
+route. Measured on the same data: **14.21 s of blocking CPU became 0.16 s**, with
+identical answers on all 235 probes.
+
+**Read the shape of a timing table before reading the numbers.** Everything
+finishing together means contention, not slowness, and no amount of optimising
+the slowest row would have found this — the slowest row was a symptom.
+
+Still worth doing: the remaining synchronous work should move off the event
+loop with `asyncio.to_thread`, so that a genuinely expensive layer delays only
+itself. The index removed the pain; it did not remove the coupling.
+
 ### Open ideas, nothing agreed
 
 More incident providers; a `MOTO_TILE_URL` setting (the tile server is hard-coded

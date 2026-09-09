@@ -455,3 +455,67 @@ def corridor_points(
         step = len(merged) / max_points
         merged = [merged[int(i * step)] for i in range(max_points)]
     return merged
+
+
+class RouteIndex:
+    """A grid over a route's segments, so a point is compared with a few.
+
+    Both `project_onto_polyline` and `distance_to_polyline_m` scan every
+    segment. That is fine for one point and ruinous for many: 235 fuel stops
+    against an 18,000-point track is four million segment tests, and they run
+    synchronously inside async handlers — so the event loop stops, and every
+    other layer waits behind them. It is why a route whose Overpass queries
+    took 8 seconds took 51 seconds in the app, and why the incidents panel,
+    which does no work at all for a Greek route, took 51 seconds too.
+
+    Segments are bucketed by the grid cells their bounding box touches. A
+    lookup checks the cell containing the point and its eight neighbours, so
+    any segment within one cell of the point is found. Cells are therefore
+    sized to the longest distance a caller will ask about: anything further
+    away is beyond the corridor and its exact distance does not matter.
+    """
+
+    def __init__(self, points: Sequence[LatLon], reach_m: float) -> None:
+        self.points = list(points)
+        self.cumulative = cumulative_distances(self.points)
+        # One cell is at least the reach, so the 3x3 neighbourhood covers it.
+        self.cell = max(reach_m, 50.0) / 111_320.0
+        self.grid: dict[tuple[int, int], list[int]] = {}
+
+        for i, (a, b) in enumerate(zip(self.points, self.points[1:])):
+            lat0, lat1 = sorted((a[0], b[0]))
+            lon0, lon1 = sorted((a[1], b[1]))
+            for row in range(int(lat0 // self.cell), int(lat1 // self.cell) + 1):
+                for col in range(int(lon0 // self.cell), int(lon1 // self.cell) + 1):
+                    self.grid.setdefault((row, col), []).append(i)
+
+    def _candidates(self, point: LatLon) -> list[int]:
+        row, col = int(point[0] // self.cell), int(point[1] // self.cell)
+        out: list[int] = []
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                out.extend(self.grid.get((row + dr, col + dc), ()))
+        return out
+
+    def project(self, point: LatLon) -> tuple[float, float]:
+        """``(distance_off_line_m, distance_along_line_m)``, as
+        :func:`project_onto_polyline`, for a point within the index's reach.
+
+        A point with no segment nearby returns infinity rather than a wrong
+        answer — the caller is filtering by distance, and "further than the
+        reach" is all it needs to know.
+        """
+        if len(self.points) == 1:
+            return haversine_m(point, self.points[0]), 0.0
+
+        best_off, best_along = float("inf"), 0.0
+        for i in self._candidates(point):
+            off, t = project_on_segment(point, self.points[i], self.points[i + 1])
+            if off < best_off:
+                best_off = off
+                best_along = (self.cumulative[i]
+                              + t * (self.cumulative[i + 1] - self.cumulative[i]))
+        return best_off, best_along
+
+    def distance_m(self, point: LatLon) -> float:
+        return self.project(point)[0]
