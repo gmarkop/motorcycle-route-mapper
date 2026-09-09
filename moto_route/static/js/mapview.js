@@ -208,6 +208,8 @@ const POI_STYLE = {
   fuel: { colour: '#4ea8ff', label: 'Fuel' },
   cafe: { colour: '#c98cff', label: 'Coffee' },
   viewpoint: { colour: '#4ec97f', label: 'Viewpoint' },
+  accommodation: { colour: '#f0a24a', label: 'Place to stay' },
+  motorcycle_parking: { colour: '#5ad4d4', label: 'Motorcycle parking' },
 };
 
 export function drawPois(pois, visibleCategories) {

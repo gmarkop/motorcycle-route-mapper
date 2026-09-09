@@ -73,7 +73,18 @@ COUNTRIES=(
 #
 # hazards.py: highway=construction, construction, access=no, motor_vehicle=no,
 #             seasonal=yes, snowplowing=no, and barrier nodes
-# pois.py:    amenity=fuel, amenity=cafe, tourism=viewpoint
+# pois.py:    amenity=fuel, cafe, motorcycle_parking
+#             tourism=viewpoint, hotel, guest_house, camp_site, motel
+#
+# The accommodation and parking tags were chosen by tools/tag_census.py over a
+# Greek and an Italian route, not by guess. Tags that came back empty on both
+# -- motorcycle_friendly, motorcycle:theme, shop=motorcycle and its repair and
+# parts variants -- are deliberately not here: keeping a tag nobody maps costs
+# disk and import time to serve an empty panel.
+#
+# THIS LIST AND pois.CATEGORY_TAGS MUST AGREE. A tag queried but not kept here
+# returns nothing from the local server, which reads as "none along this route"
+# rather than as a missing import. tests/test_docs.py checks that they match.
 KEEP=(
   w/highway=construction
   w/construction
@@ -82,8 +93,8 @@ KEEP=(
   w/seasonal=yes
   w/snowplowing=no
   n/barrier
-  nwr/amenity=fuel,cafe
-  nwr/tourism=viewpoint
+  nwr/amenity=fuel,cafe,motorcycle_parking
+  nwr/tourism=viewpoint,hotel,guest_house,camp_site,motel
 )
 
 command -v osmium >/dev/null || { echo "osmium not found: sudo apt install osmium-tool" >&2; exit 1; }

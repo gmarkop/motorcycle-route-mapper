@@ -259,7 +259,23 @@ class Settings:
     fuel_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_FUEL_CORRIDOR_M", 1000.0))
     cafe_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_CAFE_CORRIDOR_M", 300.0))
     viewpoint_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_VIEWPOINT_CORRIDOR_M", 500.0))
+    #: Somewhere to sleep is worth a detour, but deliberately no wider than
+    #: fuel: the query searches the widest corridor of all categories at once,
+    #: so a wider one here would make every POI query more expensive, and the
+    #: Alps already answer slowly.
+    accommodation_corridor_m: float = field(
+        default_factory=lambda: _env_float("MOTO_ACCOMMODATION_CORRIDOR_M", 1000.0))
+    #: Motorcycle parking is only useful where you are already stopping, so it
+    #: is worth nothing at a distance.
+    motorcycle_parking_corridor_m: float = field(
+        default_factory=lambda: _env_float("MOTO_MOTORCYCLE_PARKING_CORRIDOR_M", 300.0))
     max_pois: int = field(default_factory=lambda: _env_int("MOTO_MAX_POIS", 300))
+    #: Accommodation alone, and lower, because it is the one dense category:
+    #: the Dolomites carry 124 hotels per 100 km, so a long Alpine day would
+    #: otherwise return several hundred places to sleep -- more than anyone
+    #: reads, and enough to make the payload the slow part.
+    max_accommodation: int = field(
+        default_factory=lambda: _env_int("MOTO_MAX_ACCOMMODATION", 100))
 
     #: Usable tank range in km. Bikes carry far less fuel than cars, which is
     #: why this app plans around it and a car navigation app does not.
@@ -297,6 +313,21 @@ class Settings:
     #: How far from the route a closure may be and still count as "on my way".
     hazard_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_HAZARD_CORRIDOR_M", 150.0))
     max_hazards: int = field(default_factory=lambda: _env_int("MOTO_MAX_HAZARDS", 200))
+
+    def poi_limit(self, category: str) -> int:
+        """How many of one category to keep -- never a shared budget.
+
+        A single cap across all categories let a dense one crowd out a sparse
+        one: measured, the Dolomites carry 124 hotels per 100 km against 11.7
+        fuel stations, so a 600 km Alpine day would spend a 300-place budget on
+        accommodation inside the first 200 km and drop every fuel stop after
+        it. The fuel stops are what `plan_fuel_stops` reads, so that would not
+        have shown up as a short list -- it would have invented a 400 km fuel
+        gap that does not exist.
+        """
+        if category == "accommodation":
+            return self.max_accommodation
+        return self.max_pois
 
     @property
     def overpass_endpoints(self) -> list[str]:

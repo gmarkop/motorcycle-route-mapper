@@ -61,12 +61,14 @@
       </section>
 
       <section id="fuel-panel" class="panel" hidden>
-        <h2>Fuel, coffee &amp; views</h2>
+        <h2>Stops along the route</h2>
         <div id="fuel-plan"></div>
         <div class="chips">
-          <button type="button" class="chip active" data-poi="fuel">⛽ Fuel</button>
-          <button type="button" class="chip active" data-poi="cafe">☕ Coffee</button>
-          <button type="button" class="chip active" data-poi="viewpoint">📷 Views</button>
+          <button type="button" class="chip active" data-poi="fuel" data-label="Fuel">⛽ Fuel</button>
+          <button type="button" class="chip active" data-poi="cafe" data-label="Coffee">☕ Coffee</button>
+          <button type="button" class="chip active" data-poi="viewpoint" data-label="Views">📷 Views</button>
+          <button type="button" class="chip active" data-poi="motorcycle_parking" data-label="Parking">🅿 Parking</button>
+          <button type="button" class="chip" data-poi="accommodation" data-label="Sleep">🛏 Sleep</button>
         </div>
         <ul id="poi-list" class="list"></ul>
       </section>
