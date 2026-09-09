@@ -20,7 +20,11 @@ const state = {
   rideKey: null,          // client-side id; stable across re-uploads
   profile: null,
   inFlight: null,                                   // AbortController
-  poiFilter: new Set(['fuel', 'cafe', 'viewpoint']),
+  // Accommodation is off by default and the others are on: the Dolomites
+  // carry 124 hotels per 100 km, so showing them unasked buries the fuel stops
+  // under a wall of markers. The chip still shows the count, so it is one
+  // click away and visibly there.
+  poiFilter: new Set(['fuel', 'cafe', 'viewpoint', 'motorcycle_parking']),
   poiPayload: null,
   curvinessOn: false,
   recoveryError: null,
@@ -41,7 +45,7 @@ const LAYERS = {
   weather: { panel: 'weather-panel', list: 'weather-list' },
   pois: {
     panel: 'fuel-panel', list: 'poi-list',
-    waiting: 'Searching OpenStreetMap for fuel, coffee and viewpoints along the route…',
+    waiting: 'Searching OpenStreetMap for fuel, coffee, views, parking and places to stay…',
   },
   hazards: {
     panel: 'hazard-panel', list: 'hazard-list',

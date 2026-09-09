@@ -200,7 +200,7 @@ moto_route/
 │   ├── cache.py       TTL cache, memory then disk
 │   ├── weather.py     Open-Meteo + the rideability score
 │   ├── hazards.py     Overpass closures within a corridor of the route
-│   ├── pois.py        Fuel, coffee, viewpoints + tank-range planning
+│   ├── pois.py        Fuel, coffee, views, stays, parking + tank-range planning
 │   ├── incidents.py   Road-authority feeds behind a provider interface
 │   └── alternates.py  OSRM alternates, ranked by corners
 └── static/
@@ -352,6 +352,8 @@ All optional, all environment variables.
 | `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |
 | `MOTO_CAFE_CORRIDOR_M` | `300` | Same, for cafes |
 | `MOTO_VIEWPOINT_CORRIDOR_M` | `500` | Same, for viewpoints |
+| `MOTO_ACCOMMODATION_CORRIDOR_M` | `1000` | Same, for places to stay. Deliberately no wider than fuel: every category is queried at the widest corridor, so raising this makes every POI query more expensive |
+| `MOTO_MOTORCYCLE_PARKING_CORRIDOR_M` | `300` | Same, for motorcycle parking, which is only useful where you already are |
 | `MOTO_MAX_CACHED_TILES` | `250` | Offline tile cap — the OSM policy limit |
 | `MOTO_TILE_DELAY_MS` | `120` | Pause between prefetch requests |
 | `MOTO_INCIDENT_FEEDS` | — | Comma-separated GeoJSON incident feed URLs |
@@ -371,7 +373,8 @@ All optional, all environment variables.
 | `MOTO_DEMANDING_MIN_M` | `300` | How long twisty-and-steep must hold to be worth flagging |
 | `MOTO_PARTIAL_TTL` | `300` | Cache lifetime for an answer missing sections, so Refresh retries them |
 | `MOTO_MAX_HAZARDS` | `200` | Cap on OSM closures returned |
-| `MOTO_MAX_POIS` | `300` | Cap on fuel/cafe/viewpoint results |
+| `MOTO_MAX_POIS` | `300` | Cap per category, not shared between them — a dense category must not be able to crowd out the fuel stops the range planner reads |
+| `MOTO_MAX_ACCOMMODATION` | `100` | Cap for places to stay alone, which is the one dense category (124 hotels per 100 km in the Dolomites) |
 
 Cache lifetimes (`MOTO_WEATHER_TTL`, `MOTO_HAZARD_TTL`, `MOTO_ROUTING_TTL`) and
 the upload limit (`MOTO_MAX_UPLOAD`) round out the set; `config.py` is the

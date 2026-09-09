@@ -141,3 +141,30 @@ def test_vendored_license_is_still_shipped():
 
     assert vendored.exists(), "Leaflet's licence file must ship with the vendored copy"
     assert "Copyright" in vendored.read_text()
+
+
+def test_the_extract_keeps_every_tag_the_app_queries():
+    """The failure this prevents is silent, and has already happened once.
+
+    A tag the app asks for but `build-extract.sh` does not keep comes back
+    empty from the local server. That reads as "none along this route", not as
+    "not imported" -- the same confusion that made the corridor probe report a
+    coverage gap that was really a missing tag.
+    """
+    from moto_route.services.pois import CATEGORY_TAGS
+
+    script = (REPO / "deploy" / "overpass" / "build-extract.sh").read_text()
+    keep = script.split("KEEP=(")[1].split(")")[0]
+    kept: dict[str, set[str]] = {}
+    for line in keep.splitlines():
+        entry = line.strip()
+        if "/" not in entry or "=" not in entry:
+            continue
+        key, values = entry.split("/", 1)[1].split("=", 1)
+        kept.setdefault(key, set()).update(values.split(","))
+
+    for category, (key, values) in CATEGORY_TAGS.items():
+        missing = set(values) - kept.get(key, set())
+        assert not missing, (
+            f"{category} queries {key}={sorted(missing)}, which the extract "
+            f"does not keep: the local server would answer 'none'")

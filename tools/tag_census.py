@@ -69,6 +69,10 @@ CANDIDATES = [
     ("guest house", "tourism", "guest_house"),
     ("campsite", "tourism", "camp_site"),
     ("motel", "tourism", "motel"),
+    # Not shipped: in the accommodation family and free to carry, but never
+    # measured, and measuring first is the whole point of this tool. Add it to
+    # pois.CATEGORY_TAGS once a route says it is worth carrying.
+    ("hostel", "tourism", "hostel"),
 ]
 
 #: Tags that would make a stop worth flagging to a rider, if they exist.

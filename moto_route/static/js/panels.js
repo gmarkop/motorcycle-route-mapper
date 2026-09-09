@@ -119,7 +119,8 @@ export function showWeather(payload) {
 
 // ------------------------------------------------------------ fuel and stops
 
-const POI_ICON = { fuel: '⛽', cafe: '☕', viewpoint: '📷' };
+const POI_ICON = { fuel: '⛽', cafe: '☕', viewpoint: '📷',
+                   accommodation: '🛏', motorcycle_parking: '🅿' };
 
 export function showPois(payload, visibleCategories) {
   $('fuel-panel').hidden = false;

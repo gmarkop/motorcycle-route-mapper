@@ -853,3 +853,59 @@ coordinates land inside Germany, which is what would catch a silent latitude
 The script honours `MOTO_AUTOBAHN_URL`, so it can be pointed at
 `tools/stub_apis.py` as a self-test; the Germany bounds check is skipped when
 the endpoint is not the public API.
+
+## POI categories, decided by census (2026-09)
+
+`tools/tag_census.py` counted every candidate tag along two real routes,
+against a public server rather than the local extract -- the extract holds only
+the tags `KEEP` was told to keep, so a candidate would have come back zero
+meaning "not imported", not "not there".
+
+Per 100 km, Athens-Volos (295 km, motorway) and Bolzano-Cortina (77 km, Alps):
+
+| tag | Greece | Italy | verdict |
+| --- | --- | --- | --- |
+| `amenity=fuel` | 37.3 | 11.7 | shipped already |
+| `amenity=cafe` | 40.4 | 86.1 | shipped already |
+| `tourism=viewpoint` | 1.0 | 54.8 | shipped already |
+| `tourism=hotel` | 8.1 | 124.0 | **built** |
+| `tourism=guest_house` | 0.7 | 14.4 | **built** |
+| `amenity=motorcycle_parking` | 0.0 | 11.7 | **built** |
+| `tourism=camp_site` | 0.7 | 0.0 | built, rides free in the same selector |
+| `tourism=motel` | 0.0 | 0.0 | built, common further north |
+| `shop=motorcycle` | 0.3 | 0.0 | rejected |
+| `shop=motorcycle_repair` | 0.0 | 0.0 | rejected |
+| `service:motorcycle:repair` | -- | 0.0 | rejected |
+| `shop=motorcycle_parts` | -- | 0.0 | rejected |
+| `motorcycle:theme` | 0.0 | 0.0 | rejected |
+| `motorcycle_friendly` | 0.0 | 0.0 | rejected |
+
+Findings worth keeping:
+
+- **Motorcycle-friendly cafes and hotels cannot be built.** `motorcycle_friendly`
+  and `motorcycle:theme` are zero on both routes, matching the OSM wiki's own
+  "rarely tagged and not used by any real data consumer". A good idea with no
+  data behind it.
+- **One country is not a measurement.** `amenity=motorcycle_parking` is zero in
+  Greece and 11.7 / 100 km in Italy. It was written off on the Greek run and
+  the Italian run brought it back.
+- **`service:motorcycle:repair` did not rescue repair.** The hypothesis was that
+  `shop=motorcycle_repair`'s zero was a tagging scheme rather than an absence.
+  It is an absence.
+- **Viewpoints are 55x denser in the Alps than along the A1** (1.0 vs 54.8).
+  Partly route type, partly how thoroughly South Tyrol is mapped. A motorway
+  route is a poor place to judge any scenic category.
+- **A dense category cannot share a cap with a sparse one.** Accommodation runs
+  124 / 100 km in the Dolomites against 11.7 for fuel, so one shared 300-place
+  budget would be spent on hotels early in a long route and drop the later fuel
+  stops. `plan_fuel_stops` reads that list, so the symptom would not have been a
+  short list -- it would have been an invented fuel gap. Caps are per category
+  (`Settings.poi_limit`), pinned by a test that fails with 1 of 10 fuel stops
+  surviving under the old shared cap.
+- **`KEEP` and `pois.CATEGORY_TAGS` must agree**, and now a test says so. A tag
+  queried but not kept returns nothing from the local server, which reads as
+  "none along this route".
+
+**The local extract must be rebuilt before the new categories work locally.**
+Greece and Italy hold no accommodation or parking tags until then; routes there
+will show empty Sleep and Parking chips while a public fallback would fill them.
