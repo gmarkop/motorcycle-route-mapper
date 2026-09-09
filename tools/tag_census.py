@@ -55,6 +55,13 @@ CANDIDATES = [
     ("viewpoint (baseline)", "tourism", "viewpoint"),
     ("motorcycle shop", "shop", "motorcycle"),
     ("motorcycle repair", "shop", "motorcycle_repair"),
+    # Athens-Volos returned 0 for shop=motorcycle_repair, which is more likely
+    # a tagging scheme than an absence: a repair shop is usually mapped as
+    # shop=motorcycle carrying service:motorcycle:repair, not under its own
+    # value. If this outscores the standalone tag, the category should be
+    # built on it instead.
+    ("  +service:*:repair", "service:motorcycle:repair", None),
+    ("motorcycle parts", "shop", "motorcycle_parts"),
     ("motorcycle parking", "amenity", "motorcycle_parking"),
     ("motorcycle:theme", "motorcycle:theme", None),
     ("motorcycle_friendly", "motorcycle_friendly", None),
@@ -127,6 +134,20 @@ def report(elements, route, radius_m: float, partial: bool) -> None:
             names = ", ".join(sorted({e["tags"].get("name", "unnamed")
                                       for e in both})[:3])
             print(f"  {label:22s} {len(both):7d}   {names}")
+
+    unclassified = [e for e in elements
+                    if not any(matches(e.get("tags", {}), k, v)
+                               for _, k, v in CANDIDATES)]
+    if unclassified:
+        # The query and the classifier are built from one list, so this should
+        # be empty. Anything here means a returned feature matched no candidate
+        # -- a selector wider than the candidate it was written for.
+        print(f"\n  {len(unclassified)} feature(s) matched no candidate; the "
+              f"query is asking for more than the census counts:")
+        for element in unclassified[:5]:
+            tags = element.get("tags", {})
+            print(f"    {tags.get('name', 'unnamed')}: "
+                  f"{dict(list(tags.items())[:3])}")
 
     if partial:
         print("\n  PARTIAL: a chunk failed, so these are lower bounds.")
