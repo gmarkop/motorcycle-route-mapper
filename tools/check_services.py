@@ -350,6 +350,71 @@ async def check_simple(name: str, url: str, client: httpx.AsyncClient,
         line("ok", name, f"{seconds:.1f}s, HTTP {result.status_code}")
 
 
+async def time_the_app(base: str, route_path: Path, client: httpx.AsyncClient) -> int:
+    """Time each layer through the running app, as the page requests them.
+
+    Everything else here measures the services the app depends on. That answers
+    "is Overpass fast?" and not "why am I staring at a spinner", and those came
+    apart badly: a Greek route measured 7.2s against the owner's own Overpass
+    while the page took over two minutes. The gap is whatever the app does that
+    is not an Overpass query, and nothing was looking there.
+
+    The layers are requested in parallel, exactly as the page does, so the
+    numbers include whatever they do to each other.
+    """
+    print(f"\nThe app itself, at {base}")
+
+    data = route_path.read_bytes()
+    try:
+        upload = await client.post(
+            f"{base}/api/routes",
+            files={"file": (route_path.name, data, "application/gpx+xml")},
+            timeout=120)
+        upload.raise_for_status()
+        route_id = upload.json()["id"]
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        line("fail", "upload", str(exc)[:90])
+        return 1
+
+    layers = {
+        "weather": "/weather?speed_kmh=80&departure=2026-09-15T05:00:00.000Z",
+        "pois": "/pois?tank_range_km=250",
+        "hazards": "/hazards",
+        "incidents": "/incidents",
+        "alternates": "/alternates",
+        "elevation": "/elevation",
+        "curviness": "/curviness",
+    }
+
+    async def one(name: str, path: str):
+        started = time.perf_counter()
+        try:
+            response = await client.get(f"{base}/api/routes/{route_id}{path}",
+                                        timeout=900)
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return name, time.perf_counter() - started, None, str(exc)[:70]
+        note = "" if payload.get("available", True) else (payload.get("reason") or "")[:70]
+        return name, time.perf_counter() - started, response.status_code, note
+
+    started = time.perf_counter()
+    results = await asyncio.gather(*(one(n, p) for n, p in layers.items()))
+    wall = time.perf_counter() - started
+
+    failed = 0
+    for name, seconds, status, note in sorted(results, key=lambda r: -r[1]):
+        if status == 200 and not note:
+            line("ok", f"{name:<11} {seconds:6.1f}s", "")
+        else:
+            failed += 1
+            line("fail" if status != 200 else "warn",
+                 f"{name:<11} {seconds:6.1f}s", note or f"HTTP {status}")
+
+    print(f"  {DIM}all layers together: {wall:.1f}s — this is what the page waits "
+          f"for{RESET}")
+    return 1 if failed else 0
+
+
 def dry_run(settings: Settings, route) -> int:
     """Build every query the checker would send, and send none of them.
 
@@ -396,6 +461,10 @@ async def main() -> int:
                              "(default: examples/dolomites_demo.gpx)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Build the queries and print the plan; send nothing")
+    parser.add_argument("--app", metavar="URL", default=None,
+                        help="Time each layer through a running app "
+                             "(e.g. http://127.0.0.1:8000) instead of checking "
+                             "the services it depends on")
     args = parser.parse_args()
 
     # Before Settings(), so the deployment's own configuration is what gets
@@ -428,6 +497,11 @@ async def main() -> int:
     if args.dry_run:
         return dry_run(settings, route)
 
+    if args.app:
+        async with httpx.AsyncClient(
+                headers={"User-Agent": settings.user_agent}) as client:
+            return await time_the_app(args.app.rstrip("/"), route_path, client)
+
     failures: list[str] = []
     async with httpx.AsyncClient(headers={"User-Agent": settings.user_agent},
                                  follow_redirects=True) as client:
@@ -443,6 +517,11 @@ async def main() -> int:
             "OSRM (alternate routes)",
             f"{settings.osrm_url.rstrip('/')}/route/v1/driving/11.5,48.1;11.6,48.2",
             client, failures, {"overview": "false"})
+        # The elevation model was never probed here, and it is the one service
+        # the app calls that check_services.py could not have told you about.
+        await check_simple(
+            "Open-Meteo (elevation)", settings.elevation_url, client, failures,
+            {"latitude": "48.1,48.2", "longitude": "11.6,11.7"})
         if settings.autobahn_enabled:
             await check_simple("Autobahn (German incidents)",
                                settings.autobahn_url, client, failures)
