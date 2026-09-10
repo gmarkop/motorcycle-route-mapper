@@ -961,3 +961,32 @@ Two things now stop it:
 Geofabrik with real osmium, and fails on the old script in both directions:
 a changed KEEP must re-filter, an unchanged one must still reuse.
 
+### The download that resumed into a different file (2026-09)
+
+The rebuild after the KEEP fix stopped with:
+
+    PBF error: invalid BlobHeader size (> max_blob_header_size)
+
+`build-extract.sh` ran `curl -fL -C -` unconditionally on every build, against
+a raw file that was already complete. Geofabrik regenerates each extract daily
+and it grows, so the resume asked for "bytes N onward", received bytes N onward
+of the **newer, larger** file, and appended them to the older file's first N
+bytes. The result is the right size and unreadable.
+
+Reproduced end to end against a Range-serving stand-in: the old script produces
+a 302-byte file where today's real file is also 302 bytes, matching neither
+day, and osmium fails with exactly that message. It had been sitting in the
+raw directory for several builds, invisible, because the filtering step was
+being skipped -- so nothing ever opened the file. One silent bug hid another.
+
+Downloads now resume into a `.part`, are checked against Geofabrik's published
+`.md5`, are opened with `osmium fileinfo` before being trusted, and only then
+moved into place. A file in `raw/` is therefore one that has been verified,
+which is what makes skipping it on the next run honest. On a mismatch it starts
+over once from nothing rather than resuming the damage.
+
+`osmium fileinfo -F pbf` is required, not tidiness: osmium picks its reader
+from the file extension, and the extension is `.part`. Without it every good
+download is rejected as unreadable and fetched forever -- caught by running it,
+not by reading it.
+

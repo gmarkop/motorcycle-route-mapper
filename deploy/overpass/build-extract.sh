@@ -183,14 +183,77 @@ if [ -n "$SIZES_ONLY" ]; then
   exit 0
 fi
 
+# Download one country, and be sure of what landed.
+#
+# `curl -C -` on a 4 GB file is worth having, and was also the bug: it was run
+# unconditionally against a *complete* file from an earlier build. Geofabrik
+# regenerates each extract daily and it grows, so the resume asked for
+# "bytes N onward", got bytes N onward of the newer, larger file, and appended
+# them to the older file's first N bytes. The result is the right size and
+# unreadable -- "PBF error: invalid BlobHeader size". It sat undetected for
+# several builds because the filtering step was being skipped, so nothing ever
+# opened the file.
+#
+# So: resume only into a .part file, check what arrived against Geofabrik's own
+# md5, and only then put it in place. A file in raw/ is now one that has been
+# verified, which is what lets the next run skip it honestly.
+download_country() {
+  local path="$1" name="${path##*/}"
+  local target="$WORK/raw/$name.osm.pbf"
+  local part="$target.part"
+  local url="$REGION_BASE/$path-latest.osm.pbf"
+  local want have attempt
+
+  want="$(curl -fsSL --retry 2 --max-time 60 "$url.md5" 2>/dev/null \
+          | awk '{print $1}')" || want=""
+  [ -n "$want" ] || echo "    $name: no checksum published, will verify by reading it"
+
+  if [ -f "$target" ]; then
+    if [ -n "$want" ] && [ "$(md5sum "$target" | awk '{print $1}')" = "$want" ]; then
+      echo "    $name: already downloaded, checksum matches"
+      return 0
+    fi
+    echo "    $name: local copy is stale or damaged, downloading again"
+    rm -f "$target" "$part"
+  fi
+
+  for attempt in 1 2; do
+    curl -fL -C - -# --retry 3 --retry-delay 5 -o "$part" "$url"
+
+    if [ -n "$want" ]; then
+      have="$(md5sum "$part" | awk '{print $1}')"
+      if [ "$have" != "$want" ]; then
+        # Almost always a resume onto bytes from a different day's file. One
+        # retry, from nothing, rather than resuming the damage.
+        echo "    $name: checksum mismatch, discarding and starting over" >&2
+        rm -f "$part"
+        continue
+      fi
+    fi
+    # Even with a matching checksum, prove osmium can open it: the checksum
+    # says the bytes arrived, not that this build can read them.
+    #
+    # -F pbf is required, not tidiness. osmium picks its reader from the file
+    # extension, and the extension here is .part -- without it, every good
+    # download is rejected as unreadable and re-fetched forever.
+    if ! osmium fileinfo -F pbf "$part" >/dev/null 2>&1; then
+      echo "    $name: downloaded but not a readable PBF, starting over" >&2
+      rm -f "$part"
+      continue
+    fi
+    mv "$part" "$target"
+    return 0
+  done
+
+  echo "$name could not be downloaded intact after two attempts." >&2
+  echo "Check the network, then delete $WORK/raw/$name.osm.pbf* and re-run." >&2
+  return 1
+}
+
 echo "==> Downloading ${#COUNTRIES[@]} country extracts into $WORK/raw"
 for path in "${COUNTRIES[@]}"; do
   name="${path##*/}"
-  target="$WORK/raw/$name.osm.pbf"
-  # -C continues a partial download, so an interrupted run resumes rather than
-  # starting the 4 GB files again.
-  curl -fL -C - -# --retry 3 --retry-delay 5 \
-       -o "$target" "$REGION_BASE/$path-latest.osm.pbf"
+  download_country "$path"
 
   # The clipping polygon Geofabrik used to cut this extract. It is the exact
   # shape of what the country file holds, and the app needs it to know when a
