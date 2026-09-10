@@ -557,10 +557,16 @@ echo "Overpass is answering."
 curl -s -X POST http://127.0.0.1:12345/api/interpreter \
   --data-urlencode 'data=[out:json];nwr(37.9,23.6,38.1,23.8)["tourism"="hotel"];out count;'
 
-# 7. Drop the app's cached answers. POI results live for six hours, so a route
-#    loaded before the import replays the old empty result and makes a good
-#    rebuild look like a failed one.
-sudo rm -f /var/lib/moto-route/*
+# 7. Drop the cached answers that came from Overpass. POI results live for six
+#    hours, so a route loaded before the import replays the old empty result
+#    and makes a good rebuild look like a failed one.
+#
+#    Only these two. The cache is one directory per service, and the others
+#    have nothing to do with the extract: clearing `elevation` in particular
+#    forces every height to be fetched from Open-Meteo again, whose rate limit
+#    is weighted by coordinate and has already cost this app a wave of 429s.
+#    The app recreates the directories at startup, so removing them is fine.
+sudo rm -rf /var/lib/moto-route/pois /var/lib/moto-route/hazards
 
 # 8. Restart the app. `enable --now` does not restart a running unit; this has
 #    cost a day here before.
