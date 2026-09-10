@@ -20,6 +20,12 @@
 # Usage:
 #   deploy/overpass/build-extract.sh [workdir]
 #   deploy/overpass/build-extract.sh --only greece,italy [workdir]
+#   deploy/overpass/build-extract.sh --sizes [--only greece,italy] [workdir]
+#
+# --sizes reports what the selected countries would cost to download, and stops.
+# Run it before a large build: the download is the obvious cost, but the
+# filtering step is the one that can exhaust a small box, and its appetite
+# follows the input size, not the handful of megabytes it produces.
 #
 # --only restricts the build to the named countries. Use it to prove the whole
 # pipeline on two small ones before committing to a 17 GB download; re-running
@@ -29,6 +35,12 @@
 # Needs:  osmium-tool  (sudo apt install osmium-tool), curl, ~40 GB free.
 
 set -euo pipefail
+
+SIZES_ONLY=""
+if [ "${1:-}" = "--sizes" ]; then
+  SIZES_ONLY=1
+  shift
+fi
 
 ONLY=""
 if [ "${1:-}" = "--only" ]; then
@@ -120,6 +132,55 @@ if [ -n "$ONLY" ]; then
   done
   COUNTRIES=("${selected[@]}")
   echo "==> Building for ${#COUNTRIES[@]} of the configured countries: $ONLY"
+fi
+
+# What this build is about to cost, asked of Geofabrik's headers rather than
+# guessed. Worth knowing before committing a 1.9 GB box to it: the download is
+# the visible cost, but the filtering step is where the memory goes, and that
+# scales with a country's size rather than with the few megabytes it leaves.
+if [ -n "$SIZES_ONLY" ]; then
+  echo "==> Download size of ${#COUNTRIES[@]} extract(s), from Geofabrik"
+  total=0
+  unknown=0
+  for path in "${COUNTRIES[@]}"; do
+    name="${path##*/}"
+    # `|| bytes=""` matters: under `set -e` with pipefail, one unreachable
+    # country would otherwise abort the whole report instead of printing "?".
+    bytes=$(curl -fsSIL --max-time 30 "$REGION_BASE/$path-latest.osm.pbf" 2>/dev/null \
+            | tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n}') \
+            || bytes=""
+    if [ -z "$bytes" ]; then
+      printf "    %-14s      ? (could not read the header)\n" "$name"
+      unknown=$((unknown + 1))
+      continue
+    fi
+    total=$((total + bytes))
+    printf "    %-14s %7.2f GB\n" "$name" "$(echo "$bytes/1073741824" | bc -l)"
+  done
+  # A total that silently omits the countries it could not reach is worse than
+  # no total: it reads as the answer.
+  if [ "$unknown" -gt 0 ]; then
+    printf "    %-14s %7.2f GB for the %d it could reach -- %d unknown, so this is a lower bound\n" \
+           "PARTIAL" "$(echo "$total/1073741824" | bc -l)" \
+           "$((${#COUNTRIES[@]} - unknown))" "$unknown"
+  else
+    printf "    %-14s %7.2f GB to download\n" "TOTAL" \
+           "$(echo "$total/1073741824" | bc -l)"
+  fi
+  # The raw files are kept so a later run can add a country without
+  # re-downloading, so peak disk is the downloads plus the filtered copies and
+  # the merged output. The filtered copies are tiny; the raw ones are not.
+  printf "    %-14s %7.2f GB peak disk, roughly (raw kept + filtered + merged)\n" \
+         "" "$(echo "$total*1.15/1073741824" | bc -l)"
+  echo
+  echo "    Disk is the easy constraint. The filtering step holds an index of"
+  echo "    the nodes each kept way refers to, and that follows the size of the"
+  echo "    country going in, not the few megabytes coming out -- which is why"
+  echo "    a big country is worth trying on its own before a full build."
+  echo
+  echo "    Free here: $(df -h --output=avail "$WORK" | tail -1 | tr -d ' ')"
+  echo "    Nothing was downloaded."
+  exit 0
 fi
 
 echo "==> Downloading ${#COUNTRIES[@]} country extracts into $WORK/raw"
