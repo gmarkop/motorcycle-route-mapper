@@ -63,6 +63,20 @@ def wanted() -> list[tuple[str, str, str | None]]:
     return out
 
 
+def implausible(total: int, peak: int, floor: int) -> bool:
+    """Is this count too small to have come from a filter that asked for it?
+
+    Two rules, because neither alone is enough. The ratio catches what the
+    absolute floor cannot: tags sharing a key sit within an order of magnitude
+    of each other in real data, so `tourism=viewpoint` outnumbering
+    `tourism=hotel` a thousand to one across Greece and Italy is a fact about
+    the build, not about tourism. The floor catches the case the ratio cannot,
+    where every value of a key is missing together and there is no healthy peer
+    to compare against.
+    """
+    return total < floor or (peak > 0 and total * 100 < peak)
+
+
 def bbox(settings: Settings) -> tuple[float, float, float, float]:
     """A box around everything the extract claims to hold.
 
@@ -108,6 +122,11 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=None,
                         help="Overpass to check (default: your configured primary)")
+    parser.add_argument("--floor", type=int, default=100,
+                        help="Below this many features across the whole "
+                             "extract, a tag is reported as implausible "
+                             "(default 100). A heuristic, and the reason the "
+                             "ratio test above it exists")
     parser.add_argument("--allow-public", action="store_true",
                         help="Check a public server anyway. Almost never what "
                              "you want: a public server holds everything, so "
@@ -131,34 +150,63 @@ async def main() -> int:
     print(f"{DIM}  every tag the app queries, counted across the whole "
           f"extract{RESET}\n")
 
-    empty: list[str] = []
+    counts: dict[tuple[str, str, str | None], int | None] = {}
     async with httpx.AsyncClient(headers={"User-Agent": settings.user_agent},
                                  follow_redirects=True) as client:
         single = Settings(overpass_url=url, overpass_fallback_urls=[],
                           overpass_coverage_files=[], overpass_coverage=None,
                           overpass_timeout_s=180)
         for needed_by, key, value in wanted():
-            total = await count(client, url, single, key, value, box)
-            tag = f"{key}={value}" if value else key
-            if total is None:
-                mark, note = f"{RED}  ??{RESET}", "could not be counted"
-            elif total == 0:
-                mark, note = f"{RED}FAIL{RESET}", "NOT IN THIS EXTRACT"
-                empty.append(tag)
-            else:
-                mark, note = f"{GREEN}  ok{RESET}", f"{total:,}"
-            print(f"  {mark}  {tag:34s} {note:22s} {DIM}{needed_by}{RESET}")
+            counts[(needed_by, key, value)] = await count(
+                client, url, single, key, value, box)
 
-    if empty:
-        print(f"\n{RED}{len(empty)} tag(s) the app asks for are not in the "
-              f"extract:{RESET} {', '.join(empty)}")
-        print("  Routes will show these as empty, which looks identical to "
-              "'none along this route'.")
-        print("  Either KEEP did not have them when you built, or the import "
-              "did not run. Rebuild,\n  re-import, and check again.")
+    # Zero is not the only way an import fails, and was not how this one did.
+    # A tag left out of the filter still returns a scattering of features --
+    # the ones dragged in as members of relations that *were* kept -- so a
+    # whole-country extract reported 17 hotels and passed. The tell is the
+    # ratio: tags sharing a key sit within an order of magnitude of each other
+    # in real data, and `tourism=viewpoint` outnumbering `tourism=hotel` by a
+    # thousand to one across Greece and Italy is not a fact about tourism.
+    biggest: dict[str, int] = {}
+    for (_, key, _), total in counts.items():
+        if total:
+            biggest[key] = max(biggest.get(key, 0), total)
+
+    failed, suspect = [], []
+    for (needed_by, key, value), total in counts.items():
+        tag = f"{key}={value}" if value else key
+        peak = biggest.get(key, 0)
+        if total is None:
+            mark, note = f"{RED}  ??{RESET}", "could not be counted"
+        elif total == 0:
+            mark, note = f"{RED}FAIL{RESET}", "NOT IN THIS EXTRACT"
+            failed.append(tag)
+        elif implausible(total, peak, args.floor):
+            mark = f"{YELLOW}HUH?{RESET}"
+            note = f"{total:,} — vs {peak:,} for {key}"
+            suspect.append(tag)
+        else:
+            mark, note = f"{GREEN}  ok{RESET}", f"{total:,}"
+        print(f"  {mark}  {tag:34s} {note:30s} {DIM}{needed_by}{RESET}")
+
+    if failed:
+        print(f"\n{RED}{len(failed)} tag(s) are not in the extract at all:"
+              f"{RESET} {', '.join(failed)}")
+    if suspect:
+        print(f"\n{YELLOW}{len(suspect)} tag(s) are present but far too rare "
+              f"to have been filtered for:{RESET} {', '.join(suspect)}")
+        print("  This is what a tag missing from KEEP looks like: a handful of "
+              "features arrive\n  anyway, as members of relations that were "
+              "kept. It is not a smaller version of\n  working -- the tag was "
+              "never extracted.")
+    if failed or suspect:
+        print("\n  Most likely the filtered country files predate the change "
+              "to KEEP. Rebuild\n  (build-extract.sh now re-filters when KEEP "
+              "changes), re-import, restart, re-check.")
         return 1
 
-    print(f"\n{GREEN}Every tag the app queries is present.{RESET}")
+    print(f"\n{GREEN}Every tag the app queries is present, in plausible "
+          f"numbers.{RESET}")
     return 0
 
 
