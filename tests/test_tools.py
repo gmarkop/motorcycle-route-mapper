@@ -282,3 +282,29 @@ def test_the_extract_check_refuses_a_public_server():
 
     assert result.returncode == 2
     assert "not your own server" in result.stderr
+
+
+def _import_check_extract():
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "check_extract", TOOLS / "check_extract.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("total,peak,expected", [
+    # The counts the owner's server actually returned after the failed rebuild.
+    (17, 17_839, True),        # hotels, against viewpoints on the same key
+    (23, 17_839, True),        # guest houses
+    (2, 51_931, True),         # motorcycle parking, against cafes
+    (29_035, 51_931, False),   # fuel, healthy
+    (17_839, 51_931, False),   # viewpoints, healthy
+    # The closest real data comes to the cutoff: construction is 1/58 of
+    # barrier across Greece and Italy, and must not be flagged. That gap
+    # is why the threshold is 1/100 and not 1/10.
+    (10_280, 593_512, False),
+])
+def test_a_tag_too_rare_to_have_been_filtered_for_is_caught(total, peak, expected):
+    check = _import_check_extract()
+    assert check.implausible(total, peak, floor=100) is expected

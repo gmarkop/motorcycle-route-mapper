@@ -200,12 +200,34 @@ for path in "${COUNTRIES[@]}"; do
        -o "$WORK/poly/$name.poly" "$REGION_BASE/$path.poly"
 done
 
+# Reusing a filtered country is what makes adding a country later cheap, but
+# the file on disk is only reusable if it was filtered with the *same* KEEP.
+# It was not, once: KEEP gained accommodation and parking tags, every country
+# reported "already filtered", and the merged extract was rebuilt from files
+# that predated the change. The result passed every test -- the tags were in
+# KEEP, and KEEP agreed with the app -- and failed only on the running server,
+# where whole countries held 17 hotels: the handful that come through
+# incidentally as members of kept relations. So the signature of KEEP is
+# stored beside each filtered file, and a change to KEEP re-filters.
+KEEP_SIG="$(printf '%s\n' "${KEEP[@]}" | sort | sha256sum | cut -c1-16)"
+
 echo "==> Filtering each country down to the tags this app queries"
+echo "    tag set $KEEP_SIG"
 for path in "${COUNTRIES[@]}"; do
   name="${path##*/}"
   src="$WORK/raw/$name.osm.pbf"
   out="$WORK/filtered/$name.osm.pbf"
-  [ -f "$out" ] && { echo "    $name: already filtered"; continue; }
+  sig="$WORK/filtered/$name.keep-sig"
+
+  if [ -f "$out" ] && [ -f "$sig" ] && [ "$(cat "$sig")" = "$KEEP_SIG" ]; then
+    echo "    $name: already filtered with this tag set"
+    continue
+  fi
+  # A filtered file with no signature predates this check, so its tag set is
+  # unknown and cannot be trusted -- re-filter rather than assume.
+  if [ -f "$out" ]; then
+    echo "    $name: filtered with a different tag set, re-filtering"
+  fi
 
   # No -R here, deliberately. osmium's -R is --omit-referenced: it *drops* the
   # nodes a kept way points at. The default keeps them, which is what we need
@@ -215,16 +237,45 @@ for path in "${COUNTRIES[@]}"; do
   # not.
   osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
 
+  echo "$KEEP_SIG" > "$sig"
+
   before=$(du -m "$src" | cut -f1)
   after=$(du -m "$out" | cut -f1)
   printf "    %-14s %6s MB -> %5s MB\n" "$name" "$before" "$after"
 done
 
+# Merging is cheap next to filtering, but merging a stale file is exactly the
+# failure above, so refuse rather than produce a plausible-looking extract.
+for path in "${COUNTRIES[@]}"; do
+  name="${path##*/}"
+  sig="$WORK/filtered/$name.keep-sig"
+  [ -f "$sig" ] && [ "$(cat "$sig")" = "$KEEP_SIG" ] || {
+    echo "$name was not filtered with the current tag set. Refusing to merge." >&2
+    exit 1
+  }
+done
+
 echo "==> Merging into one extract"
 # Everything filtered so far, not just this run's countries: adding a country
 # later should extend the extract rather than replace it with only the new one.
-osmium merge --overwrite -o "$WORK/touring-europe.osm.pbf" "$WORK"/filtered/*.osm.pbf
-echo "    merged $(ls -1 "$WORK"/filtered/*.osm.pbf | wc -l) countries"
+# Countries filtered by an earlier run but not selected this time are merged
+# in too, so their tag sets matter just as much. A stale one is dropped with a
+# warning rather than silently contributing: re-run without --only to refresh.
+merge_inputs=()
+for file in "$WORK"/filtered/*.osm.pbf; do
+  name="$(basename "$file" .osm.pbf)"
+  sig="$WORK/filtered/$name.keep-sig"
+  if [ -f "$sig" ] && [ "$(cat "$sig")" = "$KEEP_SIG" ]; then
+    merge_inputs+=("$file")
+  else
+    echo "    SKIPPING $name: filtered with an older tag set." >&2
+    echo "      Re-run without --only, or with --only $name, to bring it up to date." >&2
+  fi
+done
+[ ${#merge_inputs[@]} -gt 0 ] || { echo "Nothing current to merge." >&2; exit 1; }
+
+osmium merge --overwrite -o "$WORK/touring-europe.osm.pbf" "${merge_inputs[@]}"
+echo "    merged ${#merge_inputs[@]} countries"
 
 # Overpass imports bzip2-compressed OSM XML, not PBF. The Docker image expects
 # to find exactly that at /db/planet.osm.bz2, and will happily accept a PBF

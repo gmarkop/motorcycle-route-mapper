@@ -927,3 +927,37 @@ What no test can check is whether the build you ran and the import you did put
 that data on the server that is running -- three separate steps, each of which
 has silently not happened at least once in this project.
 
+### The rebuild that did nothing (2026-09)
+
+KEEP gained the accommodation and parking tags, the rebuild ran, and the server
+came back holding **17 hotels across Greece and Italy**. The census had found 95
+along one 77 km Dolomites road.
+
+`build-extract.sh` cached filtered countries by filename alone:
+
+```bash
+[ -f "$out" ] && { echo "    $name: already filtered"; continue; }
+```
+
+The filtered files predated the KEEP change, so every country reported "already
+filtered", `osmium tags-filter` never ran, and the merge rebuilt the extract
+from the old tag set. Everything else was green: KEEP had the tags, and
+`test_docs.py` confirmed KEEP and the app agreed.
+
+Two things now stop it:
+
+- The signature of KEEP is stored beside each filtered file. A change re-filters,
+  and a filtered file with no signature is re-filtered rather than trusted. The
+  merge refuses stale inputs instead of quietly including them.
+- `check_extract.py` no longer treats any non-zero count as a pass. **Zero is not
+  the only way an import fails**: a tag left out of the filter still arrives in
+  small numbers, as members of relations that were kept, so 17 hotels looked like
+  success. Tags sharing a key sit within an order of magnitude of each other in
+  real data, so anything under 1/100th of its healthiest peer is reported. The
+  closest healthy real case measured is `highway=construction` at 1/58 of
+  `barrier`, which is why the cutoff is 1/100 and not 1/10.
+
+`tests/test_build_extract.py` runs the real script against a local stand-in for
+Geofabrik with real osmium, and fails on the old script in both directions:
+a changed KEEP must re-filter, an unchanged one must still reuse.
+
