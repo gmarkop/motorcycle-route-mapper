@@ -1007,11 +1007,18 @@ and is simply true. Motels are a North American idea; the census had already
 measured zero along both routes. A checker that cries wolf is worse than none,
 because a real failure hides among the false alarms.
 
-So the ratio is now a screen, not a verdict. Anything it flags is put to a
-public server, and what is compared is the *share*: motels per hotel here
-against motels per hotel there. Raw counts cannot be compared, because the
-coverage box reaches far past the two countries and a public server
-legitimately holds more of everything.
+The ratio now reports rather than fails, and the reason is worth keeping: every
+tag of the import that actually broke came back **under a hundred across two
+whole countries** -- 17 hotels, 23 guest houses, 2 camp sites, 2 parking. The
+absolute floor caught all five. The ratio caught none of them, and produced the
+only false alarm. So the floor is the verdict and the ratio is a question.
+
+Settling that question needs a public server, and the first version asked it
+for every hotel between Tunisia and Ukraine, which hung. It is now opt-in
+(`--second-opinion`) and asks about a 1.5-degree sample box, found by asking
+the local server which areas actually hold data -- free, and guaranteed to be
+inside the coverage rather than out in the Adriatic. Shares are what get
+compared, not counts.
 
 - motel: 0.0081 per hotel here, 0.0085 there — rare, not missing.
 - hotel in the broken extract: 0.00095 per viewpoint here, 3.41 there — a

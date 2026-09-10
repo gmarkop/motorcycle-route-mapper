@@ -63,6 +63,56 @@ def wanted() -> list[tuple[str, str, str | None]]:
     return out
 
 
+def odd_against_its_peers(total: int, peak: int) -> bool:
+    """Is this count out of line with the healthiest tag sharing its key?
+
+    A question, not a verdict, which is the correction. Every tag of the
+    import that actually failed here came back under a hundred across two whole
+    countries -- 17 hotels, 23 guest houses, 2 camp sites -- so the floor caught
+    all of them and this rule caught none. What it did catch was
+    `tourism=motel` at 266 against 32,727 hotels, which is simply true: motels
+    are a North American idea and southern Europe has few.
+
+    So it now reports rather than fails. It still earns its place: a partial
+    import can leave a tag above the floor and far below its peers, and nothing
+    else would notice. But being outnumbered is a reason to look, and
+    --second-opinion is how to settle it.
+    """
+    return peak > 0 and total * 100 < peak
+
+
+async def sample_box(client, url: str, settings: Settings,
+                     box: tuple[float, float, float, float],
+                     biggest: dict) -> tuple[float, float, float, float] | None:
+    """A small area inside the coverage with enough in it to be worth counting.
+
+    Counting a whole country on a public server is a rude question and a slow
+    one -- the first version of this asked for every hotel between Tunisia and
+    Ukraine, and hung. A degree-and-a-half box answers in seconds and the
+    *share* of one tag against another is what the comparison needs anyway.
+
+    Found by asking the local server, which is free, and keeping the first
+    candidate that actually holds something -- so the box is guaranteed to be
+    inside the coverage rather than out at sea or over a neighbour.
+    """
+    if not biggest:
+        return None
+    key, (_, value) = max(biggest.items(), key=lambda kv: kv[1][0])
+    south, west, north, east = box
+    span = 1.5
+    # Walk in from the corners of the coverage towards its middle: the middle
+    # of a bounding box around Greece and Italy is the Adriatic.
+    for fy in (0.5, 0.25, 0.75, 0.4, 0.6):
+        for fx in (0.5, 0.25, 0.75, 0.4, 0.6):
+            lat = south + (north - south) * fy
+            lon = west + (east - west) * fx
+            candidate = (lat, lon, min(lat + span, north), min(lon + span, east))
+            found = await count(client, url, settings, key, value, candidate)
+            if found and found > 200:
+                return candidate
+    return None
+
+
 def merely_rare(here: float, there: float) -> bool:
     """Given both densities, is this tag rare or was it never extracted?
 
@@ -143,10 +193,10 @@ async def main() -> int:
                              "extract, a tag is reported as implausible "
                              "(default 100). A heuristic, and the reason the "
                              "ratio test above it exists")
-    parser.add_argument("--no-second-opinion", action="store_true",
-                        help="Do not ask a public server about tags that look "
-                             "too rare. Offline, or when you would rather "
-                             "judge the numbers yourself")
+    parser.add_argument("--second-opinion", action="store_true",
+                        help="Settle any tag reported as odd by asking a public "
+                             "server about a sample area. Off by default: it "
+                             "sends real queries to somebody else's machine")
     parser.add_argument("--allow-public", action="store_true",
                         help="Check a public server anyway. Almost never what "
                              "you want: a public server holds everything, so "
@@ -201,8 +251,11 @@ async def main() -> int:
         elif total == 0:
             mark, note = f"{RED}FAIL{RESET}", "NOT IN THIS EXTRACT"
             failed.append(tag)
-        elif implausible(total, peak, args.floor):
-            mark = f"{YELLOW}HUH?{RESET}"
+        elif total < args.floor:
+            mark, note = f"{RED}FAIL{RESET}", f"only {total:,} — far too few"
+            failed.append(tag)
+        elif odd_against_its_peers(total, peak):
+            mark = f"{YELLOW}  ?{RESET}"
             note = f"{total:,} — vs {peak:,} for {key}"
             suspect.append(tag)
         else:
@@ -219,22 +272,39 @@ async def main() -> int:
     # more. What compares is the shape: motels *per hotel* here, against motels
     # per hotel there. A tag that was never filtered for is orders of magnitude
     # out; a tag that is merely rare matches.
-    if suspect and not args.no_second_opinion:
+    if suspect and args.second_opinion:
         public = next((u for u in settings.overpass_endpoints
                        if not overpass._is_local(u)), None)
         if public is None:
             print(f"\n{DIM}  No public server configured, so the counts above "
                   f"cannot be checked against one.{RESET}")
         else:
-            print(f"\n  asking {overpass._host(public)} whether these are rare "
-                  f"or missing")
             elsewhere = Settings(overpass_url=public, overpass_fallback_urls=[],
                                  overpass_coverage_files=[],
-                                 overpass_coverage=None, overpass_timeout_s=300)
+                                 overpass_coverage=None, overpass_timeout_s=180)
             async with httpx.AsyncClient(
                     headers={"User-Agent": settings.user_agent},
-                    follow_redirects=True, timeout=330.0) as client:
-                for tag in list(suspect):
+                    follow_redirects=True, timeout=200.0) as client:
+                sample = await sample_box(client, url, single, box, biggest)
+                if sample is None:
+                    print(f"\n{DIM}  No populated sample area found, so there "
+                          f"is nothing cheap to compare.{RESET}")
+                    suspect_resolved = False
+                else:
+                    print(f"\n  asking {overpass._host(public)} about "
+                          f"{sample[0]:.1f},{sample[1]:.1f} to "
+                          f"{sample[2]:.1f},{sample[3]:.1f} — a sample, because "
+                          f"the whole\n  coverage is far too big a question to "
+                          f"put to someone else's server")
+                    box = sample
+                    for (needed_by, key, value) in list(counts):
+                        counts[(needed_by, key, value)] = await count(
+                            client, url, single, key, value, box)
+                    biggest = {}
+                    for (_, key, value), total in counts.items():
+                        if total and total > biggest.get(key, (0, None))[0]:
+                            biggest[key] = (total, value)
+                for tag in list(suspect) if sample else []:
                     key, _, value = tag.partition("=")
                     value = value or None
                     peak_total, peak_value = biggest.get(key, (0, None))
@@ -263,22 +333,27 @@ async def main() -> int:
                         failed.append(tag)
 
     if failed:
-        print(f"\n{RED}{len(failed)} tag(s) are not in the extract at all:"
+        print(f"\n{RED}{len(failed)} tag(s) are missing from the extract:"
               f"{RESET} {', '.join(failed)}")
-    if suspect:
-        print(f"\n{YELLOW}{len(suspect)} tag(s) are present but far too rare "
-              f"to have been filtered for:{RESET} {', '.join(suspect)}")
-        print("  This is what a tag missing from KEEP looks like: a handful of "
-              "features arrive\n  anyway, as members of relations that were "
-              "kept. It is not a smaller version of\n  working -- the tag was "
-              "never extracted.")
-    if failed or suspect:
+        print("  A tag left out of the filter still arrives in small numbers, "
+              "as members of\n  relations that were kept, so a count in the "
+              "tens across two countries is not a\n  smaller version of "
+              "working -- the tag was never extracted.")
         print("\n  Most likely the filtered country files predate the change "
-              "to KEEP. Rebuild\n  (build-extract.sh now re-filters when KEEP "
+              "to KEEP. Rebuild\n  (build-extract.sh re-filters when KEEP "
               "changes), re-import, restart, re-check.")
         return 1
 
-    print(f"\n{GREEN}Every tag the app queries is present, in plausible "
+    if suspect:
+        print(f"\n{YELLOW}Worth a look:{RESET} {', '.join(suspect)} "
+              f"{'is' if len(suspect) == 1 else 'are'} present, but far "
+              f"outnumbered by others sharing the same key.")
+        print("  Usually that is true rather than broken -- tourism=motel is a "
+              "North American\n  idea and southern Europe has few. "
+              "--second-opinion settles it against a public\n  server. Not a "
+              "failure on its own: everything the app queries is here.")
+
+    print(f"\n{GREEN}Every tag the app queries is present, in usable "
           f"numbers.{RESET}")
     return 0
 

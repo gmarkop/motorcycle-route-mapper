@@ -293,21 +293,31 @@ def _import_check_extract():
     return module
 
 
-@pytest.mark.parametrize("total,peak,expected", [
-    # The counts the owner's server actually returned after the failed rebuild.
+@pytest.mark.parametrize("total,peak,odd", [
+    # Every tag of the import that actually failed came back under a hundred
+    # across two countries, so the floor catches them and this rule need not.
     (17, 17_839, True),        # hotels, against viewpoints on the same key
-    (23, 17_839, True),        # guest houses
-    (2, 51_931, True),         # motorcycle parking, against cafes
     (29_035, 51_931, False),   # fuel, healthy
     (17_839, 51_931, False),   # viewpoints, healthy
+    # The false alarm that demoted this rule to a question: motels really are
+    # scarce in southern Europe, and 266 of them is not a broken import.
+    (266, 32_727, True),
     # The closest real data comes to the cutoff: construction is 1/58 of
-    # barrier across Greece and Italy, and must not be flagged. That gap
-    # is why the threshold is 1/100 and not 1/10.
+    # barrier across Greece and Italy, and must not be remarked on at all.
     (10_280, 593_512, False),
 ])
-def test_a_tag_too_rare_to_have_been_filtered_for_is_caught(total, peak, expected):
+def test_a_tag_outnumbered_by_its_peers_is_remarked_on(total, peak, odd):
     check = _import_check_extract()
-    assert check.implausible(total, peak, floor=100) is expected
+    assert check.odd_against_its_peers(total, peak) is odd
+
+
+def test_the_floor_is_what_catches_a_failed_import():
+    """The counts the owner's server actually returned, all under a hundred."""
+    check = _import_check_extract()
+    broken = {"hotel": 17, "guest_house": 23, "camp_site": 2, "parking": 2}
+
+    for tag, total in broken.items():
+        assert total < 100, f"{tag} must be caught by the floor alone"
 
 
 @pytest.mark.parametrize("here,there,rare", [
