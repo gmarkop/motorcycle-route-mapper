@@ -544,13 +544,19 @@ sudo docker run -d --restart unless-stopped \
 sudo docker top overpass | grep -c update_database     # 1 = still importing
 sudo du -sh /var/lib/overpass-db                       # should keep growing
 
-#    Or just wait for it to answer:
-until curl -sf -X POST http://127.0.0.1:12345/api/interpreter \
-      --data-urlencode 'data=[out:json];out count;' >/dev/null 2>&1; do
+#    Waiting for it to ANSWER is the wrong test, and a tempting one. The
+#    dispatcher accepts queries well before the import has finished, so
+#    Overpass says 200 to a half-loaded database -- the same shape of wrong
+#    answer as an empty extract or a route outside coverage. Wait for the
+#    importer to leave instead:
+while sudo docker top overpass | grep -q update_database; do
   echo "$(date +%T) importing, db now $(sudo du -sh /var/lib/overpass-db | cut -f1)"
   sleep 30
 done
-echo "Overpass is answering."
+echo "Import finished."
+
+#    Then confirm it has settled: two readings a minute apart, same size.
+sudo du -sh /var/lib/overpass-db; sleep 60; sudo du -sh /var/lib/overpass-db
 
 # 6. Ask it directly for something the old extract did not have. A number
 #    here is the first real evidence the import did anything.
