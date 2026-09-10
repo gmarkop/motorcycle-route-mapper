@@ -990,3 +990,33 @@ from the file extension, and the extension is `.part`. Without it every good
 download is rejected as unreadable and fetched forever -- caught by running it,
 not by reading it.
 
+### The rebuild that worked (2026-09), and the checker crying wolf
+
+Greece + Italy, after re-filtering and re-importing:
+
+| tag | before | after |
+| --- | --- | --- |
+| `tourism=hotel` | 17 | 32,727 |
+| `tourism=guest_house` | 23 | 15,861 |
+| `tourism=camp_site` | 2 | 2,966 |
+| `amenity=motorcycle_parking` | 2 | 5,471 |
+| `tourism=motel` | 0 | 266 |
+
+`tourism=motel` at 266 tripped the 1/100 ratio rule against 32,727 hotels --
+and is simply true. Motels are a North American idea; the census had already
+measured zero along both routes. A checker that cries wolf is worse than none,
+because a real failure hides among the false alarms.
+
+So the ratio is now a screen, not a verdict. Anything it flags is put to a
+public server, and what is compared is the *share*: motels per hotel here
+against motels per hotel there. Raw counts cannot be compared, because the
+coverage box reaches far past the two countries and a public server
+legitimately holds more of everything.
+
+- motel: 0.0081 per hotel here, 0.0085 there — rare, not missing.
+- hotel in the broken extract: 0.00095 per viewpoint here, 3.41 there — a
+  factor of 3,600, and unambiguous.
+
+The tolerance is a factor of ten, deliberately loose: regions really do differ,
+and the gap worth catching is thousands, not tens.
+

@@ -63,6 +63,22 @@ def wanted() -> list[tuple[str, str, str | None]]:
     return out
 
 
+def merely_rare(here: float, there: float) -> bool:
+    """Given both densities, is this tag rare or was it never extracted?
+
+    Compared as a share of the healthiest tag on the same key, because raw
+    counts cannot be: the coverage box reaches well past the countries in the
+    extract, so a public server legitimately returns far more of everything.
+    Shares survive that.
+
+    A factor of ten is loose on purpose. Regions genuinely differ -- motels are
+    scarcer in Greece than across the whole box -- and the gap this has to
+    catch is not a factor of ten but of thousands: 0.00095 hotels per viewpoint
+    in a broken extract against 3.4 in a real one.
+    """
+    return here * 10 >= there
+
+
 def implausible(total: int, peak: int, floor: int) -> bool:
     """Is this count too small to have come from a filter that asked for it?
 
@@ -127,6 +143,10 @@ async def main() -> int:
                              "extract, a tag is reported as implausible "
                              "(default 100). A heuristic, and the reason the "
                              "ratio test above it exists")
+    parser.add_argument("--no-second-opinion", action="store_true",
+                        help="Do not ask a public server about tags that look "
+                             "too rare. Offline, or when you would rather "
+                             "judge the numbers yourself")
     parser.add_argument("--allow-public", action="store_true",
                         help="Check a public server anyway. Almost never what "
                              "you want: a public server holds everything, so "
@@ -167,15 +187,15 @@ async def main() -> int:
     # ratio: tags sharing a key sit within an order of magnitude of each other
     # in real data, and `tourism=viewpoint` outnumbering `tourism=hotel` by a
     # thousand to one across Greece and Italy is not a fact about tourism.
-    biggest: dict[str, int] = {}
-    for (_, key, _), total in counts.items():
-        if total:
-            biggest[key] = max(biggest.get(key, 0), total)
+    biggest: dict[str, tuple[int, str | None]] = {}
+    for (_, key, value), total in counts.items():
+        if total and total > biggest.get(key, (0, None))[0]:
+            biggest[key] = (total, value)
 
     failed, suspect = [], []
     for (needed_by, key, value), total in counts.items():
         tag = f"{key}={value}" if value else key
-        peak = biggest.get(key, 0)
+        peak = biggest.get(key, (0, None))[0]
         if total is None:
             mark, note = f"{RED}  ??{RESET}", "could not be counted"
         elif total == 0:
@@ -188,6 +208,59 @@ async def main() -> int:
         else:
             mark, note = f"{GREEN}  ok{RESET}", f"{total:,}"
         print(f"  {mark}  {tag:34s} {note:30s} {DIM}{needed_by}{RESET}")
+
+    # A ratio is a screen, not a verdict. `tourism=motel` at 266 against 32,727
+    # hotels trips it, and is simply true: motels are a North American idea and
+    # Greece and Italy have few, which is what the census found when it counted
+    # zero along both routes. So ask a server that holds everything.
+    #
+    # Raw counts cannot be compared -- the coverage box reaches well past the
+    # countries in the extract, so a public server legitimately returns far
+    # more. What compares is the shape: motels *per hotel* here, against motels
+    # per hotel there. A tag that was never filtered for is orders of magnitude
+    # out; a tag that is merely rare matches.
+    if suspect and not args.no_second_opinion:
+        public = next((u for u in settings.overpass_endpoints
+                       if not overpass._is_local(u)), None)
+        if public is None:
+            print(f"\n{DIM}  No public server configured, so the counts above "
+                  f"cannot be checked against one.{RESET}")
+        else:
+            print(f"\n  asking {overpass._host(public)} whether these are rare "
+                  f"or missing")
+            elsewhere = Settings(overpass_url=public, overpass_fallback_urls=[],
+                                 overpass_coverage_files=[],
+                                 overpass_coverage=None, overpass_timeout_s=300)
+            async with httpx.AsyncClient(
+                    headers={"User-Agent": settings.user_agent},
+                    follow_redirects=True, timeout=330.0) as client:
+                for tag in list(suspect):
+                    key, _, value = tag.partition("=")
+                    value = value or None
+                    peak_total, peak_value = biggest.get(key, (0, None))
+                    mine = counts[next(k for k in counts
+                                       if k[1] == key and k[2] == value)]
+                    theirs = await count(client, public, elsewhere, key, value, box)
+                    theirs_peak = await count(client, public, elsewhere, key,
+                                              peak_value, box)
+                    if not theirs or not theirs_peak or not peak_total:
+                        print(f"  {DIM}  {tag}: no answer, leaving it flagged"
+                              f"{RESET}")
+                        continue
+                    here = mine / peak_total
+                    there = theirs / theirs_peak
+                    if merely_rare(here, there):
+                        suspect.remove(tag)
+                        print(f"  {GREEN}  ok{RESET}  {tag:30s} rare, not "
+                              f"missing: {here:.4f} per {key}={peak_value} "
+                              f"here, {there:.4f} there")
+                    else:
+                        print(f"  {RED}FAIL{RESET}  {tag:30s} missing: "
+                              f"{here:.5f} per {key}={peak_value} here, "
+                              f"{there:.4f} there")
+                        # Promoted, not duplicated: it is no longer a suspicion.
+                        suspect.remove(tag)
+                        failed.append(tag)
 
     if failed:
         print(f"\n{RED}{len(failed)} tag(s) are not in the extract at all:"

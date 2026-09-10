@@ -308,3 +308,17 @@ def _import_check_extract():
 def test_a_tag_too_rare_to_have_been_filtered_for_is_caught(total, peak, expected):
     check = _import_check_extract()
     assert check.implausible(total, peak, floor=100) is expected
+
+
+@pytest.mark.parametrize("here,there,rare", [
+    # motel, measured: 266/32,727 here against a public server's 0.0085.
+    # Genuinely scarce in Greece and Italy, and correctly not a failure.
+    (266 / 32_727, 0.0085, True),
+    # hotel in the broken extract: 17/17,869 against 3.41. Never extracted.
+    (17 / 17_869, 61_000 / 17_869, False),
+    # A region with half the density of the wider box is still fine.
+    (0.05, 0.10, True),
+])
+def test_rare_is_told_apart_from_never_extracted(here, there, rare):
+    check = _import_check_extract()
+    assert check.merely_rare(here, there) is rare
