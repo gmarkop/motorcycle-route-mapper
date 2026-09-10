@@ -484,6 +484,9 @@ never ask.
 sudo apt install osmium-tool
 sudo mkdir -p /var/lib/overpass-build && sudo chown "$USER" /var/lib/overpass-build
 
+# What it would cost, before committing to it. Downloads nothing.
+deploy/overpass/build-extract.sh --sizes /var/lib/overpass-build
+
 # Prove the pipeline on two countries first — half an hour, not half a day.
 deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
 
@@ -491,6 +494,19 @@ deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
 # merged extract is rebuilt from everything present, not just the new ones.
 deploy/overpass/build-extract.sh /var/lib/overpass-build
 ```
+
+**After the import, verify it before trusting a route:**
+
+```bash
+python tools/check_extract.py
+```
+
+It counts every tag the app queries against your own server. A tag the app
+asks for but the extract never kept comes back empty, and empty is
+indistinguishable from "none along this route" — which is precisely how a
+missing import stays hidden until you are looking at a map with no fuel on it.
+Building, importing and restarting are three separate steps, and each has
+silently not happened at least once here.
 
 Take the first line seriously. A 17 GB download followed by an import is a long
 way to travel before finding out that a step does not work on your box; two
