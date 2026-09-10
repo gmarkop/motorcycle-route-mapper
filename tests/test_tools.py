@@ -36,6 +36,7 @@ def run(*args: str) -> subprocess.CompletedProcess:
 @pytest.mark.parametrize("tool", [
     "check_services.py", "check_coverage.py", "verify_autobahn.py",
     "browser_test.py", "stub_apis.py", "tag_census.py",
+    "check_extract.py",
 ])
 def test_every_tool_at_least_imports(tool):
     """A syntax error or a bad import should not wait for a live server."""
@@ -46,7 +47,7 @@ def test_every_tool_at_least_imports(tool):
 
 @pytest.mark.parametrize("tool", ["check_services.py", "check_coverage.py",
                                   "verify_autobahn.py", "browser_test.py",
-                                  "tag_census.py"])
+                                  "tag_census.py", "check_extract.py"])
 def test_every_tool_parses_its_arguments(tool):
     result = run(str(TOOLS / tool), "--help")
     assert result.returncode == 0, result.stderr
@@ -255,3 +256,29 @@ def test_the_chunk_size_reaches_the_query_not_just_the_plan():
                                     census.Settings(), 20)
 
     assert single.overpass_max_points == 20
+
+
+def test_the_extract_check_covers_every_tag_the_app_queries():
+    """It must not drift from what the app actually asks its server for."""
+    sys.path.insert(0, str(TOOLS))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "check_extract", TOOLS / "check_extract.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from moto_route.services.pois import CATEGORY_TAGS
+
+    checked = {(key, value) for _, key, value in module.wanted()}
+    for key, values in CATEGORY_TAGS.values():
+        for value in values:
+            assert (key, value) in checked, f"{key}={value} is never verified"
+
+
+def test_the_extract_check_refuses_a_public_server():
+    """A public server holds every tag, so checking one proves nothing."""
+    result = run(str(TOOLS / "check_extract.py"),
+                 "--url", "https://overpass.kumi.systems/api/interpreter")
+
+    assert result.returncode == 2
+    assert "not your own server" in result.stderr

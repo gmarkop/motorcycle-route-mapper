@@ -909,3 +909,21 @@ Findings worth keeping:
 **The local extract must be rebuilt before the new categories work locally.**
 Greece and Italy hold no accommodation or parking tags until then; routes there
 will show empty Sleep and Parking chips while a public fallback would fill them.
+
+### After every extract rebuild
+
+`python tools/check_extract.py` counts every tag the app queries against your
+own server, across the whole coverage area. Run it before trusting a route.
+
+The two tools are opposites and both are needed:
+
+| | asks | answers |
+| --- | --- | --- |
+| `tag_census.py` | a public server | does this tag exist in the world? |
+| `check_extract.py` | your own server | did my build actually keep it? |
+
+`tests/test_docs.py` already fails if `KEEP` and `pois.CATEGORY_TAGS` disagree.
+What no test can check is whether the build you ran and the import you did put
+that data on the server that is running -- three separate steps, each of which
+has silently not happened at least once in this project.
+
