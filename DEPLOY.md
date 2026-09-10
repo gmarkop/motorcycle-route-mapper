@@ -500,6 +500,66 @@ damaged. The script now detects that against Geofabrik's checksum and fetches
 it again by itself; if you want to force it, delete the file under `raw/` and
 re-run.
 
+### Re-importing after a rebuild
+
+The whole sequence, in order. Every step has silently not happened at least
+once here, so each one has a check that fails loudly rather than a result you
+have to squint at.
+
+```bash
+# 1. Rebuild. Expect "re-filtering" if KEEP changed, or "stale or damaged" if
+#    a raw download needs replacing. "already filtered with this tag set" for
+#    every country means nothing was rebuilt.
+deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
+
+# 2. Check the extract before importing it, not after. This is the last point
+#    where a problem is cheap.
+osmium fileinfo /var/lib/overpass-build/touring-europe.osm.bz2
+ls -lh /var/lib/overpass-build/touring-europe.osm.bz2
+
+# 3. Stop the old instance and empty the database. OVERPASS_MODE=init will not
+#    overwrite a database directory that still has anything in it, and it does
+#    not say so -- it just serves the old data.
+sudo docker rm -f overpass
+sudo rm -rf /var/lib/overpass-db/*
+
+# 4. Import (the same command as the first time).
+sudo docker run -d --restart unless-stopped \
+  -e OVERPASS_MODE=init \
+  -e OVERPASS_META=no \
+  -e OVERPASS_PLANET_URL=file:///data/touring-europe.osm.bz2 \
+  -e OVERPASS_RULES_LOAD=10 \
+  -v /var/lib/overpass-db:/db \
+  -v /var/lib/overpass-build:/data:ro \
+  -p 127.0.0.1:12345:80 \
+  --name overpass wiktorn/overpass-api
+
+# 5. Wait for it. Ctrl-C out of the logs once "dispatcher" and
+#    "update_database" are gone from `sudo docker top overpass`.
+sudo docker logs -f overpass
+
+# 6. Ask it directly for something the old extract did not have. A number
+#    here is the first real evidence the import did anything.
+curl -s -X POST http://127.0.0.1:12345/api/interpreter \
+  --data-urlencode 'data=[out:json];nwr(37.9,23.6,38.1,23.8)["tourism"="hotel"];out count;'
+
+# 7. Drop the app's cached answers. POI results live for six hours, so a route
+#    loaded before the import replays the old empty result and makes a good
+#    rebuild look like a failed one.
+sudo rm -f /var/lib/moto-route/*
+
+# 8. Restart the app. `enable --now` does not restart a running unit; this has
+#    cost a day here before.
+sudo systemctl restart moto-route
+systemctl show -p MainPID --value moto-route
+
+# 9. The verdict. Thirteen lines, all ok, exit 0.
+/opt/moto-route/.venv/bin/python tools/check_extract.py
+```
+
+Step 9 is the one that decides. The absence of an error message in steps 1-8
+has meant nothing at least three times.
+
 **After the import, verify it before trusting a route:**
 
 ```bash
