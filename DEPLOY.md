@@ -495,6 +495,11 @@ deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
 deploy/overpass/build-extract.sh /var/lib/overpass-build
 ```
 
+If a build stops with `PBF error: invalid BlobHeader size`, a raw download is
+damaged. The script now detects that against Geofabrik's checksum and fetches
+it again by itself; if you want to force it, delete the file under `raw/` and
+re-run.
+
 **After the import, verify it before trusting a route:**
 
 ```bash
