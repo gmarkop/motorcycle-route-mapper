@@ -534,9 +534,23 @@ sudo docker run -d --restart unless-stopped \
   -p 127.0.0.1:12345:80 \
   --name overpass wiktorn/overpass-api
 
-# 5. Wait for it. Ctrl-C out of the logs once "dispatcher" and
-#    "update_database" are gone from `sudo docker top overpass`.
-sudo docker logs -f overpass
+# 5. Wait. The logs stop at the curl progress bar that copies the extract into
+#    the container, and then say nothing for the whole import -- it looks
+#    frozen exactly while it is working. Do not judge it by the logs.
+#
+#    `dispatcher` is the query daemon and runs for the life of the container,
+#    so it is never a sign of anything. `update_database` is the import, and
+#    its absence is what finished looks like.
+sudo docker top overpass | grep -c update_database     # 1 = still importing
+sudo du -sh /var/lib/overpass-db                       # should keep growing
+
+#    Or just wait for it to answer:
+until curl -sf -X POST http://127.0.0.1:12345/api/interpreter \
+      --data-urlencode 'data=[out:json];out count;' >/dev/null 2>&1; do
+  echo "$(date +%T) importing, db now $(sudo du -sh /var/lib/overpass-db | cut -f1)"
+  sleep 30
+done
+echo "Overpass is answering."
 
 # 6. Ask it directly for something the old extract did not have. A number
 #    here is the first real evidence the import did anything.
