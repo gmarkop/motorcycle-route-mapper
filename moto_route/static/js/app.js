@@ -20,11 +20,15 @@ const state = {
   rideKey: null,          // client-side id; stable across re-uploads
   profile: null,
   inFlight: null,                                   // AbortController
-  // Accommodation is off by default and the others are on: the Dolomites
-  // carry 124 hotels per 100 km, so showing them unasked buries the fuel stops
-  // under a wall of markers. The chip still shows the count, so it is one
-  // click away and visibly there.
-  poiFilter: new Set(['fuel', 'cafe', 'viewpoint', 'motorcycle_parking']),
+  // All five on. Accommodation started off, on the theory that 124 hotels per
+  // 100 km of Dolomites would bury the fuel stops -- but the owner went
+  // looking for it twice and found an empty map both times, which is the
+  // stronger evidence. These are multi-day routes consulted the evening
+  // before a ride, and a bed is a thing you came to find rather than a thing
+  // you would rather not see. Density is handled where it belongs now: a
+  // crowded category is thinned across the route and the chip says so.
+  poiFilter: new Set(['fuel', 'cafe', 'viewpoint', 'motorcycle_parking',
+                      'accommodation']),
   poiPayload: null,
   curvinessOn: false,
   recoveryError: null,
