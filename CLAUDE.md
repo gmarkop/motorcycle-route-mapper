@@ -1059,3 +1059,20 @@ five, and `check_extract.py` could not have noticed: it verifies the server,
 not what the app asks the server for. The cache needed no clearing, though --
 the POI cache key is the query text, so a changed query misses by construction.
 
+### 98 of 100 (2026-09-11)
+
+A Greek route returned 98 places to stay against a cap of 100. Two more and the
+old behaviour would have kept the first 100 in route order and dropped the
+rest -- which does not read as a truncated list, it reads as a stretch of road
+with nowhere to sleep. On the far half of a ride, that is the worst place for
+the app to be quietly wrong.
+
+Categories are now thinned across the route (every Nth) rather than truncated
+at the front, and the payload carries `thinned` so the chip can say
+"100 of 340" instead of a bare 100. Verified end to end: 340 hotels over a
+75 km route keep coverage from km 0 to km 75, where truncation would have
+stopped at km 22.
+
+Same shape as the fuel-plan bug, and the same lesson: a partial answer that
+does not say it is partial is indistinguishable from a complete one.
+

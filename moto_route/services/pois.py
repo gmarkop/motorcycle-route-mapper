@@ -157,6 +157,8 @@ async def find_pois(
                       settings.partial_ttl_s if cached.get("partial")
                       else settings.hazard_ttl_s)
 
+    all_pois = _elements_to_pois(cached.get("elements", []), route_points,
+                                 settings, cap=False)
     pois = _elements_to_pois(cached.get("elements", []), route_points, settings)
 
     # Range planning runs over the fuel stops only, in route order.
@@ -177,6 +179,17 @@ async def find_pois(
         "counts": {
             category: sum(1 for p in pois if p.category == category)
             for category in CATEGORIES
+        },
+        # Which categories are a sample rather than everything there is. A
+        # thinned list that does not say so is a quiet lie about the route:
+        # nothing distinguishes "these are all the hotels" from "these are a
+        # hundred of them", and a rider planning a night stop deserves to know
+        # which they are looking at.
+        "thinned": {
+            category: found
+            for category in CATEGORIES
+            if (found := sum(1 for p in all_pois if p.category == category))
+            > settings.poi_limit(category)
         },
         "fuel_plan": plan.to_dict(),
         "partial": bool(cached.get("partial")),
@@ -275,6 +288,7 @@ def _elements_to_pois(
     elements: Sequence[dict[str, Any]],
     route_points: Sequence[geo.LatLon],
     settings: Settings,
+    cap: bool = True,
 ) -> list[Poi]:
     corridor = _corridors(settings)
     widest = max(corridor.values())
@@ -312,18 +326,31 @@ def _elements_to_pois(
         ))
 
     pois.sort(key=lambda p: p.distance_along_route_m)
+    if not cap:
+        return pois
 
     # Capped per category, never as one shared budget. Accommodation is dense
     # enough (124 / 100 km in the Dolomites) that a shared cap would be spent
     # on hotels within the first part of a long route, dropping the later fuel
     # stops -- and `plan_fuel_stops` reads that list, so the result would have
     # been a fuel gap the app invented rather than a short list anyone noticed.
+    #
+    # And thinned across the route rather than truncated at the front. The list
+    # is in route order, so keeping the first N empties everything past a
+    # certain kilometre. Measured on a real Greek route: 98 places to stay
+    # against a cap of 100. Two more and the far half of the ride would have
+    # shown none, which reads as open country rather than as a list that
+    # stopped. Every Nth keeps the end of the route represented -- the half you
+    # are furthest from home in, and the half you are looking for a bed in.
     kept: list[Poi] = []
-    room = {category: settings.poi_limit(category) for category in CATEGORY_TAGS}
-    for poi in pois:
-        if room[poi.category] > 0:
-            room[poi.category] -= 1
-            kept.append(poi)
+    for category in CATEGORY_TAGS:
+        found = [p for p in pois if p.category == category]
+        limit = settings.poi_limit(category)
+        if len(found) > limit:
+            step = len(found) / limit
+            found = [found[int(i * step)] for i in range(limit)]
+        kept.extend(found)
+    kept.sort(key=lambda p: p.distance_along_route_m)
     return kept
 
 

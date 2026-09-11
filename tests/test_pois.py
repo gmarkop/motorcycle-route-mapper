@@ -380,3 +380,43 @@ async def test_motorcycle_parking_keeps_its_narrow_corridor(settings, cache):
     names = {p["name"] for p in result["pois"]}
     assert "Near bay" in names, "~100 m, inside the 300 m corridor"
     assert "Far bay" not in names, "~700 m, well outside it"
+
+
+async def test_a_capped_category_still_covers_the_far_end_of_the_route(settings, cache):
+    """Truncating at the front empties the second half of the ride.
+
+    Measured on a real Greek route: 98 places to stay against a cap of 100.
+    Two more and the old behaviour would have returned only the hotels in the
+    first stretch, which reads as "nowhere to sleep after km 60" rather than as
+    a list that stopped.
+    """
+    settings.max_accommodation = 10
+    elements = [{"type": "node", "id": 300 + i, "lat": 48.0 + i * 0.01,
+                 "lon": 11.0, "tags": {"tourism": "hotel", "name": f"H{i}"}}
+                for i in range(100)]
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    stays = [p for p in result["pois"] if p["category"] == "accommodation"]
+    assert len(stays) == 10
+    # The route runs ~111 km; the last kept stay must be near its end, not at
+    # a tenth of the way along.
+    furthest = max(p["distance_along_route_m"] for p in stays)
+    assert furthest > 90_000, f"last stay at km {furthest / 1000:.0f}"
+
+
+async def test_the_app_says_which_categories_are_only_a_sample(settings, cache):
+    settings.max_accommodation = 10
+    elements = [{"type": "node", "id": 400 + i, "lat": 48.0 + i * 0.01,
+                 "lon": 11.0, "tags": {"tourism": "hotel"}} for i in range(100)]
+    elements.append({"type": "node", "id": 999, "lat": 48.5, "lon": 11.0,
+                     "tags": {"amenity": "fuel"}})
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    assert result["thinned"] == {"accommodation": 100}, result["thinned"]
+    assert "fuel" not in result["thinned"], "one fuel station is not a sample"
