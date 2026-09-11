@@ -203,8 +203,13 @@ export function showHazards(payload) {
     return;
   }
   if (!payload.hazards.length) {
-    $('hazard-list').innerHTML =
-      '<li class="muted tiny">No mapped closures or roadworks on this route.</li>';
+    // "Nothing on your route" and "nothing anywhere near your route" are
+    // different answers, and the second is the reassuring one. Saying which
+    // keeps an empty panel from reading as a layer that did not run.
+    $('hazard-list').innerHTML = payload.nearby
+      ? `<li class="muted tiny">Nothing closed on this route. ${payload.nearby}`
+        + ` nearby, on other roads.</li>`
+      : '<li class="muted tiny">No mapped closures or roadworks on this route.</li>';
     mapview.layers.hazards.clearLayers();
     return;
   }

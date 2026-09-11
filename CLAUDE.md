@@ -1082,3 +1082,27 @@ it twice and found an empty map both times. These routes are planned the
 evening before a multi-day ride, where a bed is what you came for. Density is
 handled by the thinning above, not by hiding the category.
 
+### Closures on the route, not near it (2026-09-11)
+
+The panel was cluttered with closures that are not on the ride, and the obvious
+fix -- a narrower corridor -- would not have worked. `_project_onto_route`
+takes the hazard's *closest* vertex, so a closed side road meeting the route at
+a junction reports **zero metres off route**. No corridor width excludes
+something that is touching.
+
+The question that separates them is not how close the nearest point is but how
+much of the way keeps company with the route: a junction contributes one
+segment, the road you are riding contributes its length. `_runs_along_route`
+measures that, requiring 200 m alongside or 60% of a short way's length, so a
+closed 80 m bridge on the route is not dismissed for being short.
+
+Searched wide, shown narrow -- the same shape `pois.py` uses. The 150 m search
+corridor is unchanged, because shrinking it is a recorded **don't**: a 250 m
+thinning inside a 150 m corridor is what once left most of a 389 km route
+unsearched. `MOTO_HAZARD_ON_ROUTE_M` (60 m) decides what is shown.
+
+Nothing is dropped silently. The payload carries `nearby`, the note says "3
+more closures are within 150 m of the route but on other roads", and an empty
+panel distinguishes "nothing closed on this route, 3 nearby" from "no closures
+at all" -- which are different answers, and the second is the reassuring one.
+
