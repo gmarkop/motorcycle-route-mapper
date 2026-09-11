@@ -1131,3 +1131,31 @@ away the map a rider downloaded for a route with no signal, on every update.
 Its name is kept exactly as first shipped so existing caches survive this
 change too. A test fails if anyone versions it.
 
+### The elevation profile, coloured by gradient (2026-09-11)
+
+The profile was a single orange line. It showed the shape of the hills and
+nothing about the ride: a 6% drag and a 6% descent drew identically, and the
+`gradient_pct` the elevation service computes for every sample was being thrown
+away by the frontend.
+
+Gradient is a polarity, so the scale is diverging -- two hues with a neutral
+grey midpoint, never a rainbow. The steps deliberately avoid the amber and
+green the map spends on curviness, so the two encodings are not confused, and
+were validated for colour-vision deficiency against the panel background
+rather than chosen by eye: worst adjacent pair ΔE 13.6 protan, 17.6 normal
+vision, all five above 3:1 contrast.
+
+Two things only checking caught:
+
+- The dark-blue "steep descent" band looked wrong in a screenshot and was
+  correct in the DOM. Squinting at a PNG is not a check.
+- **A tap on an iPad set the readout and instantly cleared it.** `pointerleave`
+  fires the moment a touch ends, so the cleanup wiped the reading the tap had
+  just produced -- the profile looked inert on the device it is most read on,
+  while working perfectly under a mouse. A lifted finger is not a pointer that
+  left, and keeping the reading is the better behaviour anyway: tap a spot, it
+  stays until you tap another.
+
+Also redrawn on resize, because the SVG is sized in pixels from its container
+and a rotated iPad would otherwise stretch the marks and the labels with them.
+

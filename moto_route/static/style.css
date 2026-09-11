@@ -153,11 +153,24 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
          border: 1px solid var(--border); color: var(--muted); }
 
 #profile-wrap {
-  height: 130px; border-top: 1px solid var(--border);
+  height: 156px; border-top: 1px solid var(--border);
   background: var(--panel); padding: 6px 10px 2px; position: relative;
 }
-#profile { width: 100%; height: 100px; display: block; }
+/* No preserveAspectRatio="none": the viewBox is set from the element's own
+   pixel size and redrawn on resize, so stretching would only ever distort the
+   strokes and the labels. touch-action keeps a drag along the profile from
+   scrolling the page on an iPad, which is where this gets read. */
+#profile { width: 100%; height: 122px; display: block; touch-action: none; }
 #profile-readout { position: absolute; top: 8px; right: 14px; }
+
+#profile-legend {
+  position: absolute; bottom: 4px; right: 14px;
+  display: flex; align-items: center; gap: 3px;
+}
+#profile-legend .swatch {
+  width: 12px; height: 8px; border-radius: 2px; display: inline-block;
+}
+#profile-legend .tiny { margin-left: 6px; }
 
 footer { margin-top: 18px; line-height: 1.45; }
 
