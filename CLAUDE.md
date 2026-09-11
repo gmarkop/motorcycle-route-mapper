@@ -1076,3 +1076,9 @@ stopped at km 22.
 Same shape as the fuel-plan bug, and the same lesson: a partial answer that
 does not say it is partial is indistinguishable from a complete one.
 
+**Accommodation is on by default** (2026-09-11). It shipped off, reasoning that
+Alpine hotel density would bury the fuel stops. The owner then went looking for
+it twice and found an empty map both times. These routes are planned the
+evening before a multi-day ride, where a bed is what you came for. Density is
+handled by the thinning above, not by hiding the category.
+
