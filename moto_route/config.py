@@ -312,6 +312,14 @@ class Settings:
     # --- hazards -------------------------------------------------------------
     #: How far from the route a closure may be and still count as "on my way".
     hazard_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_HAZARD_CORRIDOR_M", 150.0))
+    #: How close a closure has to run to count as being *on* the route rather
+    #: than near it. Deliberately tighter than the corridor searched: the
+    #: search has to be generous, because the query line is simplified and a
+    #: recorded track wanders, but what gets shown should be the road you are
+    #: actually riding. Raise it if closures you care about are being filed as
+    #: nearby; the panel says how many those are, so it is never a silent drop.
+    hazard_on_route_m: float = field(
+        default_factory=lambda: _env_float("MOTO_HAZARD_ON_ROUTE_M", 60.0))
     max_hazards: int = field(default_factory=lambda: _env_int("MOTO_MAX_HAZARDS", 200))
 
     def poi_limit(self, category: str) -> int:

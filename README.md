@@ -335,6 +335,7 @@ All optional, all environment variables.
 | `MOTO_WEATHER_INTERVAL_M` | `25000` | Distance between weather samples |
 | `MOTO_MAX_WEATHER_SAMPLES` | `24` | Cap on forecast points per route |
 | `MOTO_HAZARD_CORRIDOR_M` | `150` | How far off-route a closure still counts |
+| `MOTO_HAZARD_ON_ROUTE_M` | `60` | How close a closure must run to count as being *on* the route rather than near it. The corridor above is what gets searched — deliberately generous, since the query line is simplified and a recorded track wanders — while this decides what gets shown. Anything filtered out is counted in the panel, never silently dropped |
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
 | `MOTO_OVERPASS_CONCURRENCY` | `2` | Queries in flight against the **public** servers — their documented per-IP allowance; drop to `1` if rate-limited |

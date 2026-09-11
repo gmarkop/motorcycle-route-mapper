@@ -155,9 +155,14 @@ async def find_hazards(
                         reason=f"Showing the last closure data — {exc}")
         return {"available": False, "reason": str(exc), "hazards": []}
 
-    hazards = _elements_to_hazards(payload.get("elements", []), route_points, settings)
+    hazards, nearby = _elements_to_hazards(payload.get("elements", []),
+                                           route_points, settings)
     note = ("From OpenStreetMap: construction, gates and access restrictions. "
             "Long-lived closures only — not live traffic or today's incidents.")
+    if nearby:
+        note += (f" {nearby} more {'closure is' if nearby == 1 else 'closures are'} "
+                 f"within {int(settings.hazard_corridor_m)} m of the route but "
+                 f"on other roads, and not shown.")
     if payload.get("partial"):
         note += (f" {payload['failed_chunks']} of {payload['total_chunks']} "
                  "sections of the route could not be checked in the time "
@@ -169,6 +174,12 @@ async def find_hazards(
         "partial": bool(payload.get("partial")),
         "hazards": [h.to_dict() for h in hazards],
         "corridor_m": settings.hazard_corridor_m,
+        "on_route_m": settings.hazard_on_route_m,
+        # Found in the corridor but not on the road being ridden. Reported
+        # rather than dropped: the panel shows what is on the route, and says
+        # how much it is not showing, so a quiet map is a statement rather than
+        # an absence of one.
+        "nearby": nearby,
         "note": note,
     }
     # A partial answer gets a short TTL: the note above tells the rider to press
@@ -204,6 +215,7 @@ def _elements_to_hazards(
     # what made this layer block the event loop for the best part of a minute.
     index = geo.RouteIndex(route_points, settings.hazard_corridor_m * 2)
     hazards: list[Hazard] = []
+    nearby: list[dict[str, Any]] = []
 
     for element in elements:
         tags = element.get("tags") or {}
@@ -220,6 +232,17 @@ def _elements_to_hazards(
         # against the real route so a shortcut in the query cannot smuggle in a
         # hazard that is actually far away.
         if off_route_m > settings.hazard_corridor_m * 2:
+            continue
+
+        # Searched wide, shown narrow -- the same shape the POI layer uses. The
+        # search has to be generous because the query line is simplified and a
+        # recorded track wanders, but a closure on the next street over is not
+        # a closure on this ride, and a panel full of them is one nobody reads.
+        # Counted rather than dropped: see `nearby` in the payload.
+        if (off_route_m > settings.hazard_on_route_m
+                or not _runs_along_route(geometry, index,
+                                         settings.hazard_on_route_m)):
+            nearby.append(element)
             continue
 
         category, label, severity = _classify(tags)
@@ -239,7 +262,7 @@ def _elements_to_hazards(
         )
 
     hazards.sort(key=lambda h: h.distance_along_route_m)
-    return hazards[: settings.max_hazards]
+    return hazards[: settings.max_hazards], len(nearby)
 
 
 def _element_geometry(element: dict[str, Any]) -> list[geo.LatLon]:
@@ -265,6 +288,15 @@ def _element_geometry(element: dict[str, Any]) -> list[geo.LatLon]:
     return sampled
 
 
+#: A way has to run this far inside the on-route distance before it counts as
+#: the road you are riding. A side road crossing at a junction contributes only
+#: its first segment or two; a closure on your own road contributes hundreds of
+#: metres. Short ways are judged by the fraction instead, so a closed 80 m
+#: bridge on the route is not dismissed for being short.
+ON_ROUTE_RUN_M = 200.0
+ON_ROUTE_FRACTION = 0.6
+
+
 def _project_onto_route(
     geometry: Sequence[geo.LatLon],
     index: geo.RouteIndex,
@@ -287,6 +319,39 @@ def _project_onto_route(
             best = (vertex, off, along)
 
     return best
+
+
+def _runs_along_route(
+    geometry: Sequence[geo.LatLon],
+    index: geo.RouteIndex,
+    on_route_m: float,
+) -> bool:
+    """Is this closure on the road being ridden, or does it merely touch it?
+
+    The distinction the closest-vertex test cannot make, and the one that fills
+    the panel with things that are not on the route. A closed side street
+    meeting the route at a junction has a vertex *on* the route -- zero metres
+    off it -- and reads exactly like a closure of the road you are riding. What
+    separates them is not how close the nearest point is but how much of the
+    way keeps company with the route: a junction contributes a segment, your
+    own road contributes its length.
+
+    A single-vertex hazard -- a gate, a barrier -- has no length to measure, so
+    it is judged by distance alone and this is not asked of it.
+    """
+    if len(geometry) < 2:
+        return True
+
+    near = [index.project(vertex)[0] <= on_route_m for vertex in geometry]
+    alongside = total = 0.0
+    for (a, b), (a_near, b_near) in zip(zip(geometry, geometry[1:]),
+                                        zip(near, near[1:])):
+        length = geo.haversine_m(a, b)
+        total += length
+        if a_near and b_near:
+            alongside += length
+
+    return alongside >= min(ON_ROUTE_RUN_M, total * ON_ROUTE_FRACTION)
 
 
 def _classify(tags: dict[str, str]) -> tuple[str, str, str]:
