@@ -31,6 +31,11 @@ const state = {
                       'accommodation']),
   poiPayload: null,
   curvinessOn: false,
+  // Twisty *and* steep stretches. They arrive on the curviness
+  // payload while the profile arrives on the elevation one, from
+  // different endpoints in either order, so each redraws when the
+  // other lands rather than assuming it got there first.
+  demanding: [],
   recoveryError: null,
   servedFromCache: false,
   config: {
@@ -424,13 +429,24 @@ async function loadCurviness() {
     const response = await routeFetch('/curviness');
     const payload = await response.json();
     panels.showCurviness(payload);
+    rememberDemanding(payload);
     if (state.rideKey) await store.saveLayer(state.rideKey, 'curviness', payload);
   } catch {
     const cached = await cachedLayer('curviness');
-    if (cached) panels.showCurviness(cached.payload);
+    if (cached) {
+      panels.showCurviness(cached.payload);
+      rememberDemanding(cached.payload);
+    }
     /* Otherwise: the heat map is a nicety, and its absence needs no announcement. */
   }
 }
+
+/** Keep the demanding stretches, and put them on the profile if it is drawn. */
+function rememberDemanding(payload) {
+  state.demanding = (payload && payload.demanding) || [];
+  if (state.profile && state.profile.length) drawProfile(state.profile);
+}
+
 
 function wireCurvinessToggle() {
   const button = $('curviness-toggle');
@@ -598,51 +614,199 @@ function showProfile(payload) {
   drawProfile(payload.samples);
 }
 
-/* Hand-rolled SVG rather than a charting library: about thirty lines, and it
- * keeps the page dependency-free. */
+/* Hand-rolled SVG rather than a charting library: it keeps the page
+ * dependency-free, and the shape being drawn is simple.
+ *
+ * The line is coloured by gradient, which is the whole point of having one.
+ * A route's profile drawn in a single colour tells you the shape of the hills
+ * but not where the work is -- and a 6% drag and a 6% descent look identical
+ * on it, which are not remotely the same ride.
+ *
+ * Gradient is a polarity: climbing one way, descending the other, flat in the
+ * middle. So the scale is diverging -- two hues with a neutral grey midpoint,
+ * never a rainbow -- and it deliberately avoids the amber and green the map
+ * already spends on curviness, so the two encodings are not confused.
+ * Validated for colour-vision deficiency against the panel background rather
+ * than chosen by eye.
+ */
+const GRADIENT_BANDS = [
+  { upTo: -6, colour: '#2b6cb0', label: 'steep descent' },
+  { upTo: -2, colour: '#7fcdff', label: 'descent' },
+  { upTo: 2, colour: '#8a93a3', label: 'level' },
+  { upTo: 6, colour: '#ffa06b', label: 'climb' },
+  { upTo: Infinity, colour: '#e8452f', label: 'steep climb' },
+];
+
+function gradientBand(pct) {
+  return GRADIENT_BANDS.find((b) => (pct || 0) < b.upTo) || GRADIENT_BANDS[4];
+}
+
+/** Round to something a person would put on an axis. */
+function niceStep(span) {
+  const rough = span / 3;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  return [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) || rough;
+}
+
 function drawProfile(samples) {
   const svg = $('profile');
   const width = svg.clientWidth || 800;
-  const height = svg.clientHeight || 100;
-  const pad = 4;
+  const height = svg.clientHeight || 110;
+  const padL = 38;     // room for the metre labels
+  const padR = 8;
+  const padT = 8;
+  const padB = 16;     // room for the kilometre labels
 
   const maxDistance = samples[samples.length - 1].distance_m || 1;
   const elevations = samples.map((s) => s.ele);
   const minEle = Math.min(...elevations);
   const maxEle = Math.max(...elevations);
-  const span = Math.max(maxEle - minEle, 1);
 
-  const x = (d) => pad + (d / maxDistance) * (width - 2 * pad);
-  const y = (e) => height - pad - ((e - minEle) / span) * (height - 2 * pad);
+  // Grid lines land on round heights rather than on the data's extremes, so
+  // the eye has something regular to measure differences against -- which is
+  // what the profile is for.
+  const step = niceStep(Math.max(maxEle - minEle, 1));
+  const gridLow = Math.floor(minEle / step) * step;
+  const gridHigh = Math.ceil(maxEle / step) * step;
+  const span = Math.max(gridHigh - gridLow, 1);
 
-  const line = samples
+  const x = (d) => padL + (d / maxDistance) * (width - padL - padR);
+  const y = (e) => height - padB - ((e - gridLow) / span) * (height - padT - padB);
+
+  const parts = [];
+
+  // Twisty and steep together, shaded behind everything else. An annotation on
+  // the plot rather than another series, so it wears amber -- which the
+  // gradient ramp deliberately leaves free -- and sits under the line instead
+  // of competing with it. The panel below lists them; this says where they are.
+  const demanding = state.demanding || [];
+  demanding.forEach((stretch) => {
+    const left = x(stretch.from_m);
+    const right = Math.max(x(stretch.to_m), left + 2);
+    parts.push(
+      `<rect x="${left.toFixed(1)}" y="${padT}" width="${(right - left).toFixed(1)}" `
+      + `height="${height - padT - padB}" fill="#ffc74a16"/>`
+      + `<rect x="${left.toFixed(1)}" y="${height - padB - 2}" `
+      + `width="${(right - left).toFixed(1)}" height="2" fill="#ffc74a"/>`);
+  });
+
+  for (let e = gridLow; e <= gridHigh + 0.001; e += step) {
+    parts.push(
+      `<line x1="${padL}" y1="${y(e).toFixed(1)}" x2="${width - padR}" `
+      + `y2="${y(e).toFixed(1)}" stroke="#2e343f" stroke-width="1"/>`
+      + `<text x="${padL - 6}" y="${(y(e) + 3.5).toFixed(1)}" fill="#9aa3b2" `
+      + `font-size="10" text-anchor="end">${Math.round(e)}</text>`);
+  }
+
+  const path = samples
     .map((s, i) => `${i ? 'L' : 'M'}${x(s.distance_m).toFixed(1)},${y(s.ele).toFixed(1)}`)
     .join('');
-  const area = `${line}L${x(maxDistance).toFixed(1)},${height - pad}L${pad},${height - pad}Z`;
+  parts.push(`<path d="${path}L${x(maxDistance).toFixed(1)},${height - padB}`
+             + `L${padL},${height - padB}Z" fill="#ffffff0d"/>`);
+
+  // Consecutive samples in the same band become one path, so a 300-sample
+  // route draws a handful of strokes instead of three hundred.
+  const runs = [];
+  samples.forEach((sample, i) => {
+    if (i === 0) return;
+    const band = gradientBand(sample.gradient_pct);
+    const last = runs[runs.length - 1];
+    if (last && last.band === band) last.points.push(sample);
+    else runs.push({ band, points: [samples[i - 1], sample] });
+  });
+  runs.forEach((run) => {
+    const d = run.points
+      .map((s, i) => `${i ? 'L' : 'M'}${x(s.distance_m).toFixed(1)},${y(s.ele).toFixed(1)}`)
+      .join('');
+    parts.push(`<path d="${d}" fill="none" stroke="${run.band.colour}" `
+               + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`);
+  });
+
+  const kmStep = niceStep(maxDistance / 1000) * 1000;
+  for (let d = 0; d <= maxDistance + 1; d += kmStep) {
+    parts.push(`<text x="${x(d).toFixed(1)}" y="${height - 4}" fill="#9aa3b2" `
+               + `font-size="10" text-anchor="middle">${Math.round(d / 1000)}</text>`);
+  }
+
+  // The crosshair, hidden until pointed at.
+  parts.push('<line id="profile-cross" x1="0" y1="' + padT + '" x2="0" y2="'
+             + (height - padB) + '" stroke="#e6e9ef" stroke-width="1" '
+             + 'stroke-dasharray="2 2" opacity="0"/>'
+             + '<circle id="profile-dot" r="4.5" fill="#e6e9ef" stroke="#14171c" '
+             + 'stroke-width="2" opacity="0"/>');
 
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  svg.innerHTML =
-    `<path d="${area}" fill="#ff7a2f22"/>`
-    + `<path d="${line}" fill="none" stroke="#ff7a2f" stroke-width="1.5"/>`
-    + `<text x="${pad + 2}" y="12" fill="#9aa3b2" font-size="10">${Math.round(maxEle)} m</text>`
-    + `<text x="${pad + 2}" y="${height - 6}" fill="#9aa3b2" font-size="10">${Math.round(minEle)} m</text>`;
+  svg.innerHTML = parts.join('');
 
-  svg.onmousemove = (event) => {
+  $('profile-legend').innerHTML = GRADIENT_BANDS
+    .map((b) => `<span class="swatch" style="background:${b.colour}" `
+                + `title="${b.label}"></span>`).join('')
+    + '<span class="tiny muted">&minus;6% &middot; level &middot; +6%</span>'
+    + (demanding.length
+        ? '<span class="swatch demanding-key" title="Twisty and steep"></span>'
+          + '<span class="tiny muted">twisty &amp; steep</span>'
+        : '');
+
+  const cross = svg.querySelector('#profile-cross');
+  const dot = svg.querySelector('#profile-dot');
+
+  const at = (clientX) => {
     const rect = svg.getBoundingClientRect();
-    const fraction = (event.clientX - rect.left) / rect.width;
-    const target = fraction * maxDistance;
+    const fraction = (clientX - rect.left) / rect.width;
+    const target = Math.max(0, Math.min(1, fraction)) * maxDistance;
     // Samples are ordered by distance, so a linear scan finds the nearest.
-    const sample = samples.reduce((best, s) => (
+    return samples.reduce((best, s) => (
       Math.abs(s.distance_m - target) < Math.abs(best.distance_m - target) ? s : best));
-    $('profile-readout').textContent =
-      `km ${(sample.distance_m / 1000).toFixed(1)} · ${Math.round(sample.ele)} m`;
+  };
+
+  // Pointer events rather than mouse events: this is read on an iPad as often
+  // as on a laptop, and `mousemove` never fires there. `touch-action: none` in
+  // the stylesheet stops a drag along the profile scrolling the page instead.
+  const track = (event) => {
+    const sample = at(event.clientX);
+    const slope = sample.gradient_pct || 0;
+    const band = gradientBand(slope);
+    cross.setAttribute('x1', x(sample.distance_m).toFixed(1));
+    cross.setAttribute('x2', x(sample.distance_m).toFixed(1));
+    cross.setAttribute('opacity', '0.5');
+    dot.setAttribute('cx', x(sample.distance_m).toFixed(1));
+    dot.setAttribute('cy', y(sample.ele).toFixed(1));
+    dot.setAttribute('fill', band.colour);
+    dot.setAttribute('opacity', '1');
+    const inside = demanding.some((d) => sample.distance_m >= d.from_m
+                                      && sample.distance_m <= d.to_m);
+    $('profile-readout').innerHTML =
+      `km ${(sample.distance_m / 1000).toFixed(1)} · <strong>${Math.round(sample.ele)} m</strong>`
+      + ` · ${slope > 0 ? '+' : ''}${slope.toFixed(1)}%`
+      + (inside ? ' · <span class="demanding-flag">twisty &amp; steep</span>' : '');
     mapview.showPositionAt(sample.distance_m);
   };
-  svg.onmouseleave = () => {
+
+  svg.onpointermove = track;
+  svg.onpointerdown = track;
+  svg.onpointerleave = (event) => {
+    // A lifted finger is not a pointer that left. On touch, `pointerleave`
+    // fires the instant the tap ends, so clearing here wiped the reading the
+    // tap had just produced -- the profile looked inert on an iPad while
+    // working perfectly under a mouse. Keeping it is also the better
+    // behaviour: you tap a spot, and it stays until you tap another.
+    if (event.pointerType === 'touch') return;
+    cross.setAttribute('opacity', '0');
+    dot.setAttribute('opacity', '0');
     $('profile-readout').textContent = '';
     mapview.hidePosition();
   };
 }
+
+// Redrawn on resize: the SVG is sized in pixels from its container, so without
+// this a rotated iPad stretches the marks and the labels with them.
+let profileResize;
+window.addEventListener('resize', () => {
+  clearTimeout(profileResize);
+  profileResize = setTimeout(() => {
+    if (state.profile && state.profile.length) drawProfile(state.profile);
+  }, 150);
+});
 
 // ------------------------------------------------------- saved rides & restore
 
