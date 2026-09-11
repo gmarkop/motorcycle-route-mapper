@@ -1166,3 +1166,28 @@ rather than assuming it got there first. They are drawn as an annotation
 behind the line, in the amber the gradient ramp deliberately leaves free, and
 the readout says "twisty & steep" when the pointer is inside one.
 
+### Two ways the profile broke quietly (2026-09-11)
+
+Reported as "we lost the demanding stretches section" and "the line is static".
+Two unrelated-looking symptoms, two real fragilities, neither of which any
+existing check could see -- the Python suite never loads the page, and a broken
+page still renders enough to look alive.
+
+**`showDemanding` sat behind an early return.** `showCurviness` began
+`if (!payload.available || !payload.samples.length) return;`, so a curviness
+layer that could not be computed took the demanding panel down with it: no
+panel, no reason, which reads as a feature that was removed rather than one
+that could not run. `showDemanding` already knows how to explain itself; it is
+now called either way.
+
+**The legend was written before the pointer handlers were bound.** A page whose
+HTML is a version behind its JavaScript -- which a service worker produces
+easily -- drew the coloured line, threw on the missing legend element, and left
+the profile inert. The crosshair is the feature and the legend is chrome, so
+the chrome now goes last and tolerates being absent.
+
+Both are pinned by `tests/test_frontend.py`, which checks the ordering in the
+source. Unusual, and worth it: the ordering is the invariant, there is no JS
+harness here, and the handler ordering was got wrong once inside the very
+commit that fixed it.
+

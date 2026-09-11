@@ -303,13 +303,19 @@ export function showAlternates(payload) {
 // ------------------------------------------------------------------ curviness
 
 export function showCurviness(payload) {
-  if (!payload.available || !payload.samples.length) return;
-  mapview.drawCurviness(payload.samples);
-  setCurvinessStat(payload.overall, curvinessLabel(payload.overall));
+  if (payload.available && payload.samples.length) {
+    mapview.drawCurviness(payload.samples);
+    setCurvinessStat(payload.overall, curvinessLabel(payload.overall));
 
-  const bar = document.querySelector('#curviness-legend .legend-bar');
-  if (bar) bar.style.background = curvinessGradient();
+    const bar = document.querySelector('#curviness-legend .legend-bar');
+    if (bar) bar.style.background = curvinessGradient();
+  }
 
+  // Outside the guard on purpose. This used to sit behind an early return, so
+  // a curviness layer that could not be computed took the demanding-stretches
+  // panel down with it -- silently, with no panel and no reason, which reads
+  // as a feature that was removed rather than one that could not run.
+  // `showDemanding` already knows how to say why it has nothing to show.
   showDemanding(payload);
 }
 
