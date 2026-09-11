@@ -1106,3 +1106,28 @@ more closures are within 150 m of the route but on other roads", and an empty
 panel distinguishes "nothing closed on this route, 3 nearby" from "no closures
 at all" -- which are different answers, and the second is the reassuring one.
 
+### Why a deploy took two reloads to appear (2026-09-11)
+
+A layout change went live and the browser kept showing the old one. Not the
+install, not the server -- the service worker.
+
+```js
+const VERSION = 'v1';                       // never changed, all project long
+const SHELL_CACHE = `moto-shell-${VERSION}`;
+```
+
+The shell is served stale-while-revalidate, so every deploy reused the same
+cache: the first load rendered the old CSS and fetched the new one for next
+time. Two reloads to see any front-end change, and nothing anywhere said so --
+which reads as a deploy that did not happen, and has been mistaken for one.
+
+`/sw.js` is now served by the app with `VERSION` replaced by a sha256 of the
+shell assets themselves. The cache name changes exactly when what it holds
+changes, and not on a restart that altered nothing.
+
+**The tile cache is deliberately not versioned.** `activate` deletes every
+`moto-` cache that is not current, so a versioned tile cache name would throw
+away the map a rider downloaded for a route with no signal, on every update.
+Its name is kept exactly as first shipped so existing caches survive this
+change too. A test fails if anyone versions it.
+
