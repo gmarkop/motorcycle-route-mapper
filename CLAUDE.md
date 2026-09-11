@@ -1159,3 +1159,10 @@ Two things only checking caught:
 Also redrawn on resize, because the SVG is sized in pixels from its container
 and a rotated iPad would otherwise stretch the marks and the labels with them.
 
+Demanding stretches are shaded on the profile too. They arrive on the
+**curviness** payload while the profile arrives on the **elevation** one, from
+different endpoints in either order, so each redraws when the other lands
+rather than assuming it got there first. They are drawn as an annotation
+behind the line, in the amber the gradient ramp deliberately leaves free, and
+the readout says "twisty & steep" when the pointer is inside one.
+

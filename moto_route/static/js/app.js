@@ -31,6 +31,11 @@ const state = {
                       'accommodation']),
   poiPayload: null,
   curvinessOn: false,
+  // Twisty *and* steep stretches. They arrive on the curviness
+  // payload while the profile arrives on the elevation one, from
+  // different endpoints in either order, so each redraws when the
+  // other lands rather than assuming it got there first.
+  demanding: [],
   recoveryError: null,
   servedFromCache: false,
   config: {
@@ -424,13 +429,24 @@ async function loadCurviness() {
     const response = await routeFetch('/curviness');
     const payload = await response.json();
     panels.showCurviness(payload);
+    rememberDemanding(payload);
     if (state.rideKey) await store.saveLayer(state.rideKey, 'curviness', payload);
   } catch {
     const cached = await cachedLayer('curviness');
-    if (cached) panels.showCurviness(cached.payload);
+    if (cached) {
+      panels.showCurviness(cached.payload);
+      rememberDemanding(cached.payload);
+    }
     /* Otherwise: the heat map is a nicety, and its absence needs no announcement. */
   }
 }
+
+/** Keep the demanding stretches, and put them on the profile if it is drawn. */
+function rememberDemanding(payload) {
+  state.demanding = (payload && payload.demanding) || [];
+  if (state.profile && state.profile.length) drawProfile(state.profile);
+}
+
 
 function wireCurvinessToggle() {
   const button = $('curviness-toggle');
@@ -659,6 +675,21 @@ function drawProfile(samples) {
 
   const parts = [];
 
+  // Twisty and steep together, shaded behind everything else. An annotation on
+  // the plot rather than another series, so it wears amber -- which the
+  // gradient ramp deliberately leaves free -- and sits under the line instead
+  // of competing with it. The panel below lists them; this says where they are.
+  const demanding = state.demanding || [];
+  demanding.forEach((stretch) => {
+    const left = x(stretch.from_m);
+    const right = Math.max(x(stretch.to_m), left + 2);
+    parts.push(
+      `<rect x="${left.toFixed(1)}" y="${padT}" width="${(right - left).toFixed(1)}" `
+      + `height="${height - padT - padB}" fill="#ffc74a16"/>`
+      + `<rect x="${left.toFixed(1)}" y="${height - padB - 2}" `
+      + `width="${(right - left).toFixed(1)}" height="2" fill="#ffc74a"/>`);
+  });
+
   for (let e = gridLow; e <= gridHigh + 0.001; e += step) {
     parts.push(
       `<line x1="${padL}" y1="${y(e).toFixed(1)}" x2="${width - padR}" `
@@ -710,7 +741,11 @@ function drawProfile(samples) {
   $('profile-legend').innerHTML = GRADIENT_BANDS
     .map((b) => `<span class="swatch" style="background:${b.colour}" `
                 + `title="${b.label}"></span>`).join('')
-    + '<span class="tiny muted">&minus;6% &middot; level &middot; +6%</span>';
+    + '<span class="tiny muted">&minus;6% &middot; level &middot; +6%</span>'
+    + (demanding.length
+        ? '<span class="swatch demanding-key" title="Twisty and steep"></span>'
+          + '<span class="tiny muted">twisty &amp; steep</span>'
+        : '');
 
   const cross = svg.querySelector('#profile-cross');
   const dot = svg.querySelector('#profile-dot');
@@ -738,9 +773,12 @@ function drawProfile(samples) {
     dot.setAttribute('cy', y(sample.ele).toFixed(1));
     dot.setAttribute('fill', band.colour);
     dot.setAttribute('opacity', '1');
+    const inside = demanding.some((d) => sample.distance_m >= d.from_m
+                                      && sample.distance_m <= d.to_m);
     $('profile-readout').innerHTML =
       `km ${(sample.distance_m / 1000).toFixed(1)} · <strong>${Math.round(sample.ele)} m</strong>`
-      + ` · ${slope > 0 ? '+' : ''}${slope.toFixed(1)}%`;
+      + ` · ${slope > 0 ? '+' : ''}${slope.toFixed(1)}%`
+      + (inside ? ' · <span class="demanding-flag">twisty &amp; steep</span>' : '');
     mapview.showPositionAt(sample.distance_m);
   };
 

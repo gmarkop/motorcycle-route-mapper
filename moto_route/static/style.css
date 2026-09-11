@@ -171,6 +171,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   width: 12px; height: 8px; border-radius: 2px; display: inline-block;
 }
 #profile-legend .tiny { margin-left: 6px; }
+#profile-legend .demanding-key {
+  margin-left: 10px; background: #ffc74a16; border-bottom: 2px solid var(--warn);
+}
+.demanding-flag { color: var(--warn); }
 
 footer { margin-top: 18px; line-height: 1.45; }
 
