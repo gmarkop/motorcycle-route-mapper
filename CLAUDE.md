@@ -1027,3 +1027,35 @@ compared, not counts.
 The tolerance is a factor of ten, deliberately loose: regions really do differ,
 and the gap worth catching is thousands, not tens.
 
+### The census and the app agree (2026-09-11)
+
+Athens-Volos through the running app, against what `tag_census.py` had measured
+along the same route days earlier on a public server:
+
+| category | census | the app |
+| --- | --- | --- |
+| fuel | 110 | 110 |
+| accommodation | 28 | 29 |
+| viewpoint | 3 | 3 |
+| cafe | 119 | 96 |
+| motorcycle_parking | 0 | 0 |
+
+Fuel matching exactly -- same route, same 1 km corridor, different servers --
+is the strongest evidence available here that the local extract holds what the
+public one does along a real route. Accommodation is the same story at the same
+corridor.
+
+Cafe is lower by design, not by error: the app searches 300 m for a cafe and
+1000 m for fuel, while the census asked at 1000 m throughout. Worth remembering
+before reading a future gap as a fault.
+
+`motorcycle_parking: 0` is correct. Greece has none along this route and Italy
+has 11.7 per 100 km, which is why two countries were measured before building
+it.
+
+**`git pull` does not update the running service, and this cost a round here
+again.** The app kept answering with three categories while the extract held
+five, and `check_extract.py` could not have noticed: it verifies the server,
+not what the app asks the server for. The cache needed no clearing, though --
+the POI cache key is the query text, so a changed query misses by construction.
+
