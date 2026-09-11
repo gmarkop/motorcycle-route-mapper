@@ -738,15 +738,6 @@ function drawProfile(samples) {
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.innerHTML = parts.join('');
 
-  $('profile-legend').innerHTML = GRADIENT_BANDS
-    .map((b) => `<span class="swatch" style="background:${b.colour}" `
-                + `title="${b.label}"></span>`).join('')
-    + '<span class="tiny muted">&minus;6% &middot; level &middot; +6%</span>'
-    + (demanding.length
-        ? '<span class="swatch demanding-key" title="Twisty and steep"></span>'
-          + '<span class="tiny muted">twisty &amp; steep</span>'
-        : '');
-
   const cross = svg.querySelector('#profile-cross');
   const dot = svg.querySelector('#profile-dot');
 
@@ -796,6 +787,21 @@ function drawProfile(samples) {
     $('profile-readout').textContent = '';
     mapview.hidePosition();
   };
+
+  // Written after the handlers are bound, and tolerant of being absent. The
+  // legend is chrome; the crosshair is the feature. Reversed, a page whose
+  // HTML is a version behind its JavaScript -- which a service worker can
+  // easily produce -- drew the coloured line, threw on the missing element,
+  // and left the profile inert, with the two failures looking unrelated.
+  const legend = $('profile-legend');
+  if (legend) legend.innerHTML = GRADIENT_BANDS
+    .map((b) => `<span class="swatch" style="background:${b.colour}" `
+                + `title="${b.label}"></span>`).join('')
+    + '<span class="tiny muted">&minus;6% &middot; level &middot; +6%</span>'
+    + (demanding.length
+        ? '<span class="swatch demanding-key" title="Twisty and steep"></span>'
+          + '<span class="tiny muted">twisty &amp; steep</span>'
+        : '');
 }
 
 // Redrawn on resize: the SVG is sized in pixels from its container, so without
