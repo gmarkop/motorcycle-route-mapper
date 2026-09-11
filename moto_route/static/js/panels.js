@@ -170,12 +170,19 @@ export function showPois(payload, visibleCategories) {
       </li>`).join('')
     : '<li class="muted tiny">Nothing mapped in these categories along the route.</li>';
 
-  // Update the filter chips with what was actually found.
+  // Update the filter chips with what was actually found. A category the
+  // server had to thin says so on the chip -- "98 of 340" rather than a bare
+  // 98, because a sample presented as a total is a quiet lie about the route.
+  const thinned = payload.thinned || {};
   document.querySelectorAll('.chip[data-poi]').forEach((chip) => {
     const category = chip.dataset.poi;
     const count = counts[category] || 0;
-    chip.textContent = `${POI_ICON[category]} ${chip.dataset.label || category} (${count})`;
+    const shown = thinned[category] ? `${count} of ${thinned[category]}` : count;
+    chip.textContent = `${POI_ICON[category]} ${chip.dataset.label || category} (${shown})`;
     chip.classList.toggle('active', visibleCategories.has(category));
+    chip.title = thinned[category]
+      ? `${thinned[category]} found along the route; showing ${count} spread along it`
+      : '';
   });
 
   wireRows('poi-list', 14);
