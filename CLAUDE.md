@@ -1235,15 +1235,18 @@ Sixteen countries, from Geofabrik's headers rather than from guesswork:
 
 | | |
 | --- | --- |
-| download | **12.18 GB** |
-| peak working disk (raw kept + filtered + merged) | **~14 GB** |
+| download | **12.86 GB** (20 countries, measured 2026-09-14) |
+| peak working disk (raw kept + filtered + merged) | **~14.8 GB** |
 | peak memory, one country at a time | **1343 MB** (germany) |
 | free on the box | 120 GB |
 
 The list is lopsided, which is worth knowing when trimming it again: germany
-4.51, italy 2.08 and poland 1.95 are 8.5 of the 12.2 GB, while liechtenstein,
-luxembourg, macedonia and montenegro together are under 0.1 GB. Six of the
-sixteen cost essentially nothing.
+4.51, italy 2.08 and poland 1.95 are 8.5 of the 12.9 GB, while liechtenstein,
+luxembourg, macedonia, montenegro and albania together come to about 0.15 GB.
+The whole Adriatic chain added afterwards -- Slovenia, Croatia, Bosnia,
+Albania -- cost 0.68 GB between them. That is the number worth remembering: a
+country you might merely pass through is close to free to have, and leaving it
+out costs a leg of the ride with no closures checked.
 
 Germany, Greece and Italy are already downloaded, so a full build from here
 fetches about 5.3 GB rather than 12.2 -- raw files are kept and reused.
