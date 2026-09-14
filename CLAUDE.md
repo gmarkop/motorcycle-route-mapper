@@ -69,6 +69,7 @@ every configured country:
   Slovenia was added on 2026-09-14: Italy borders Austria directly, so it is
   not required, but it is the other way north out of Venice and small enough
   that having it searched costs nothing.
+  Croatia followed the same day, for the Istrian and Dalmatian coast.
 
 **The box is the constraint: 1.9 GiB RAM, 2.9 GiB swap, 134 GB disk.** That is
 under the 4 GB the Overpass image documents as its minimum, and 17 countries is

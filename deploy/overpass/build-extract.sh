@@ -76,6 +76,9 @@ COUNTRIES=(
   # through Ljubljana and the Julian Alps are the ones worth riding, and a
   # country you might turn into is exactly the one to have searched.
   europe/slovenia
+  # Croatia follows Slovenia: the Istrian coast is a short hop from Ljubljana,
+  # and the Dalmatian road south is the reason anyone rides down there.
+  europe/croatia
   europe/macedonia
   europe/serbia
   europe/montenegro
