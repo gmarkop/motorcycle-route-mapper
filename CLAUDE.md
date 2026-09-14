@@ -69,7 +69,12 @@ every configured country:
   Slovenia was added on 2026-09-14: Italy borders Austria directly, so it is
   not required, but it is the other way north out of Venice and small enough
   that having it searched costs nothing.
-  Croatia followed the same day, for the Istrian and Dalmatian coast.
+  Croatia followed the same day, for the Istrian and Dalmatian coast, and then
+  Bosnia and Albania, which completes the chain this file had already named
+  under the coverage-polygon note: Slovenia, Croatia, Bosnia, Montenegro and
+  Albania are what an overland run from Italy to Greece crosses. Bosnia is not
+  optional once the Dalmatian coast is -- the Neum corridor cuts the coast road
+  in two, so Split to Dubrovnik leaves Croatia and comes back.
 
 **The box is the constraint: 1.9 GiB RAM, 2.9 GiB swap, 134 GB disk.** That is
 under the 4 GB the Overpass image documents as its minimum, and 17 countries is

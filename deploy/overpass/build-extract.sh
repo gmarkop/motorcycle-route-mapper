@@ -79,9 +79,18 @@ COUNTRIES=(
   # Croatia follows Slovenia: the Istrian coast is a short hop from Ljubljana,
   # and the Dalmatian road south is the reason anyone rides down there.
   europe/croatia
+  # Bosnia is not optional once the Dalmatian coast is: the Neum corridor cuts
+  # the coast road in two, so Split to Dubrovnik leaves Croatia and comes back
+  # whether or not anyone planned it. Albania closes the chain at the far end.
+  #
+  # Kept in riding order, because that is what makes a gap visible: Slovenia,
+  # Croatia, Bosnia, Montenegro and Albania are what an overland run from Italy
+  # to Greece actually crosses, and the list reads as that run.
+  europe/bosnia-herzegovina
+  europe/montenegro
+  europe/albania
   europe/macedonia
   europe/serbia
-  europe/montenegro
   europe/bulgaria
   europe/romania
   # Hungary and Slovakia are not destinations, they are the way through:
