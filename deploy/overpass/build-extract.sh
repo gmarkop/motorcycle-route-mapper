@@ -71,6 +71,11 @@ REGION_BASE="https://download.geofabrik.de"
 COUNTRIES=(
   europe/greece
   europe/italy
+  # Slovenia is the other way out of the Venice landing. Italy borders Austria
+  # directly at Tarvisio, so it is not the only way north -- but the roads
+  # through Ljubljana and the Julian Alps are the ones worth riding, and a
+  # country you might turn into is exactly the one to have searched.
+  europe/slovenia
   europe/macedonia
   europe/serbia
   europe/montenegro

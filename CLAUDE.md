@@ -66,6 +66,9 @@ every configured country:
   otherwise. **A route through France still works** — the coverage polygons
   place it outside the extract and it falls back to the public servers, which
   is slower but correct rather than silently empty.
+  Slovenia was added on 2026-09-14: Italy borders Austria directly, so it is
+  not required, but it is the other way north out of Venice and small enough
+  that having it searched costs nothing.
 
 **The box is the constraint: 1.9 GiB RAM, 2.9 GiB swap, 134 GB disk.** That is
 under the 4 GB the Overpass image documents as its minimum, and 17 countries is
