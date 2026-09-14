@@ -1191,3 +1191,36 @@ source. Unusual, and worth it: the ordering is the invariant, there is no JS
 harness here, and the handler ordering was got wrong once inside the very
 commit that fixed it.
 
+### The Germany rehearsal (2026-09-14)
+
+Measured on the owner's 1.9 GB box, before committing to a 17-country build:
+
+```
+germany   peak memory 1343 MB
+germany      4615 MB ->    55 MB
+```
+
+An 84x reduction, and the memory followed the input rather than the output --
+which is the thing `du` could never have told us.
+
+**The filter runs one country at a time, so peak memory is per country, not
+cumulative.** Germany is the largest extract in the list, so 1343 MB is the
+high-water mark for the whole build. Nothing later in a full run needs more.
+
+It did lean on swap: 572 MB of it. With roughly 672 MB already held by the
+system, Overpass and the app, 1343 + 672 is over the 1.9 GB of RAM, so the
+overflow went to swap and the run survived. Stopping the Overpass container and
+`moto-route` during a large build frees most of that and should keep it in
+memory.
+
+**What this did not test is the import.** Greece and Italy, 43.7 MB of bz2,
+produced a database of about 2.5 GB. Seventeen countries will be an order of
+magnitude more, and that is now the untested step -- disk and time rather than
+memory, but untested. Budget roughly: ~30 GB of raw downloads kept for reuse,
+~1 GB filtered and merged, and tens of GB of database, against 134 GB free.
+
+France is in `COUNTRIES` and is on neither planned trip -- Greece to Poland
+goes through the Balkans, and the German trip through Austria, Germany,
+Belgium, Luxembourg and Switzerland. Dropping it would save one of the largest
+downloads. Left in because the owner listed it.
+
