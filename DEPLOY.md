@@ -500,6 +500,27 @@ damaged. The script now detects that against Geofabrik's checksum and fetches
 it again by itself; if you want to force it, delete the file under `raw/` and
 re-run.
 
+### Trying a big country before committing to one
+
+```bash
+sudo apt install time                    # for the peak-memory measurement
+deploy/overpass/build-extract.sh --sizes --only germany /var/lib/overpass-build
+deploy/overpass/build-extract.sh --rehearse --only germany /var/lib/overpass-build
+```
+
+`--rehearse` downloads and filters, reports the peak memory the filter actually
+used, and stops before the merge -- so the trial does not end up in the extract
+imported next.
+
+Peak memory is the number that matters and the one nothing else reveals.
+`osmium tags-filter` holds an index of the nodes each kept way refers to, so
+what it needs follows the size of the country going *in*, not the handful of
+megabytes coming out: Greece filtering down to 25 MB says nothing about whether
+Germany will filter at all. If the run dies, `sudo dmesg -T | grep -i 'killed
+process'` will say so; a swapfile is the usual remedy.
+
+Filtered countries are kept, so a later real run reuses the work.
+
 ### Re-importing after a rebuild
 
 The whole sequence, in order. Every step has silently not happened at least

@@ -21,6 +21,11 @@
 #   deploy/overpass/build-extract.sh [workdir]
 #   deploy/overpass/build-extract.sh --only greece,italy [workdir]
 #   deploy/overpass/build-extract.sh --sizes [--only greece,italy] [workdir]
+#   deploy/overpass/build-extract.sh --rehearse --only germany [workdir]
+#
+# --rehearse downloads and filters, reports peak memory, and stops before the
+# merge -- so a big country can be tried on a small machine without being
+# adopted into the extract that gets imported next.
 #
 # --sizes reports what the selected countries would cost to download, and stops.
 # Run it before a large build: the download is the obvious cost, but the
@@ -39,6 +44,16 @@ set -euo pipefail
 SIZES_ONLY=""
 if [ "${1:-}" = "--sizes" ]; then
   SIZES_ONLY=1
+  shift
+fi
+
+# Download and filter, report what it cost, and stop before the merge. For
+# finding out whether a big country fits on a small machine without adopting
+# it: the merge takes in every country ever filtered, so a plain run would fold
+# the rehearsal into the extract that gets imported next.
+REHEARSE=""
+if [ "${1:-}" = "--rehearse" ]; then
+  REHEARSE=1
   shift
 fi
 
@@ -298,7 +313,22 @@ for path in "${COUNTRIES[@]}"; do
   # "out geom". Verified on a hand-built sample: a construction way comes
   # through with all three of its nodes, a building way and a bench node do
   # not.
-  osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
+  # Peak memory is the question a rehearsal exists to answer, and `du` does not
+  # answer it: `osmium tags-filter` holds an index of the nodes each kept way
+  # refers to, so its appetite follows the country going in, not the few
+  # megabytes coming out. Greece filtering down to 25 MB says nothing about
+  # whether Germany will filter at all on 2 GB of RAM.
+  if [ -x /usr/bin/time ]; then
+    /usr/bin/time -v -o "$WORK/filtered/$name.time" \
+      osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
+    peak_kb="$(awk -F': ' '/Maximum resident set size/ {print $2}' \
+               "$WORK/filtered/$name.time" 2>/dev/null)" || peak_kb=""
+    [ -n "$peak_kb" ] && printf "    %-14s peak memory %s MB\n" "$name" \
+      "$((peak_kb / 1024))"
+  else
+    echo "    (install the 'time' package to measure peak memory)" >&2
+    osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
+  fi
 
   echo "$KEEP_SIG" > "$sig"
 
@@ -317,6 +347,18 @@ for path in "${COUNTRIES[@]}"; do
     exit 1
   }
 done
+
+if [ -n "$REHEARSE" ]; then
+  echo
+  echo "==> Rehearsal only. Nothing was merged, so the extract that gets"
+  echo "    imported is unchanged."
+  free -h 2>/dev/null | sed 's/^/      /' || true
+  echo
+  echo "    The filtered countries are kept, so a later real run reuses them."
+  echo "    If anything above looks wrong, check for an OOM kill:"
+  echo "      sudo dmesg -T | grep -i -E 'killed process|out of memory' | tail"
+  exit 0
+fi
 
 echo "==> Merging into one extract"
 # Everything filtered so far, not just this run's countries: adding a country

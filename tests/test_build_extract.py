@@ -275,3 +275,39 @@ def test_a_resumed_download_of_a_regenerated_extract_is_caught(tmp_path):
     assert "stale or damaged" in result.stdout, result.stdout
     subprocess.run(["osmium", "fileinfo", str(raw)], check=True,
                    capture_output=True)
+
+
+def test_a_rehearsal_does_not_join_the_extract(tmp_path):
+    """The point of a rehearsal is to learn something without adopting it.
+
+    The merge takes in every country ever filtered, so without this a trial run
+    of a large country would quietly fold it into the extract imported next --
+    on a box chosen for having 2 GB of RAM.
+    """
+    geofabrik = _geofabrik(tmp_path)
+    work = tmp_path / "work"
+    script = _script(tmp_path, geofabrik, "viewpoint,hotel")
+
+    result = subprocess.run(["bash", str(script), "--rehearse", "--only",
+                             "greece", str(work)],
+                            check=True, capture_output=True, text=True)
+
+    assert "Rehearsal only" in result.stdout, result.stdout
+    assert not (work / "touring-europe.osm.pbf").exists(), \
+        "a rehearsal must not produce a merged extract"
+    assert (work / "filtered" / "greece.osm.pbf").exists(), \
+        "the filtered country is kept, so a real run reuses it"
+
+
+def test_a_real_run_after_a_rehearsal_reuses_the_filtering(tmp_path):
+    geofabrik = _geofabrik(tmp_path)
+    work = tmp_path / "work"
+    script = _script(tmp_path, geofabrik, "viewpoint,hotel")
+
+    subprocess.run(["bash", str(script), "--rehearse", "--only", "greece",
+                    str(work)], check=True, capture_output=True)
+    real = subprocess.run(["bash", str(script), "--only", "greece", str(work)],
+                          check=True, capture_output=True, text=True)
+
+    assert "already filtered with this tag set" in real.stdout, real.stdout
+    assert (work / "touring-europe.osm.pbf").exists()
