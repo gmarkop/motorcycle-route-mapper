@@ -90,7 +90,12 @@ COUNTRIES=(
   europe/belgium
   europe/liechtenstein
   europe/luxembourg
-  europe/france
+  # France was here to carry the Luxembourg-Switzerland leg, which needs a
+  # country in between. Germany does that too and is already in the list, so
+  # France was dropped: it is one of the largest downloads and is on neither
+  # trip otherwise. A route that does go through France still works -- the
+  # coverage polygons will place it outside the extract, and it falls back to
+  # the public servers, slower but correct rather than silently empty.
 )
 
 # Every tag this app's Overpass queries can match. Kept deliberately wider than

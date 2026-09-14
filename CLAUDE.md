@@ -59,8 +59,13 @@ every configured country:
   for this: the owner named the countries he is *going to*, and Serbia does not
   border Slovakia.
 * **Germany** — Igoumenitsa-Venice ferry, then Austria, Germany, Belgium,
-  Luxembourg, Switzerland. All already configured; France covers the
-  Luxembourg-Switzerland leg, since those two do not border each other.
+  Luxembourg, Switzerland. Luxembourg and Switzerland do not border each other,
+  so that leg needs a country in between. France was carrying it and has been
+  dropped (2026-09-14): Germany connects the two as well and is in the list
+  anyway, while France was one of the largest downloads and on neither trip
+  otherwise. **A route through France still works** — the coverage polygons
+  place it outside the extract and it falls back to the public servers, which
+  is slower but correct rather than silently empty.
 
 **The box is the constraint: 1.9 GiB RAM, 2.9 GiB swap, 134 GB disk.** That is
 under the 4 GB the Overpass image documents as its minimum, and 17 countries is
