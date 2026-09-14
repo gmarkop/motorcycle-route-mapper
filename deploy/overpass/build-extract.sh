@@ -187,27 +187,27 @@ if [ -n "$SIZES_ONLY" ]; then
             | tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n}') \
             || bytes=""
     if [ -z "$bytes" ]; then
-      printf "    %-14s      ? (could not read the header)\n" "$name"
+      printf "    %-20s      ? (could not read the header)\n" "$name"
       unknown=$((unknown + 1))
       continue
     fi
     total=$((total + bytes))
-    printf "    %-14s %7.2f GB\n" "$name" "$(echo "$bytes/1073741824" | bc -l)"
+    printf "    %-20s %7.2f GB\n" "$name" "$(echo "$bytes/1073741824" | bc -l)"
   done
   # A total that silently omits the countries it could not reach is worse than
   # no total: it reads as the answer.
   if [ "$unknown" -gt 0 ]; then
-    printf "    %-14s %7.2f GB for the %d it could reach -- %d unknown, so this is a lower bound\n" \
+    printf "    %-20s %7.2f GB for the %d it could reach -- %d unknown, so this is a lower bound\n" \
            "PARTIAL" "$(echo "$total/1073741824" | bc -l)" \
            "$((${#COUNTRIES[@]} - unknown))" "$unknown"
   else
-    printf "    %-14s %7.2f GB to download\n" "TOTAL" \
+    printf "    %-20s %7.2f GB to download\n" "TOTAL" \
            "$(echo "$total/1073741824" | bc -l)"
   fi
   # The raw files are kept so a later run can add a country without
   # re-downloading, so peak disk is the downloads plus the filtered copies and
   # the merged output. The filtered copies are tiny; the raw ones are not.
-  printf "    %-14s %7.2f GB peak disk, roughly (raw kept + filtered + merged)\n" \
+  printf "    %-20s %7.2f GB peak disk, roughly (raw kept + filtered + merged)\n" \
          "" "$(echo "$total*1.15/1073741824" | bc -l)"
   echo
   echo "    Disk is the easy constraint. The filtering step holds an index of"

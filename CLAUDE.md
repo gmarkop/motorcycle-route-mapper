@@ -1238,3 +1238,40 @@ goes through the Balkans, and the German trip through Austria, Germany,
 Belgium, Luxembourg and Switzerland. Dropping it would save one of the largest
 downloads. Left in because the owner listed it.
 
+### The full-build budget, measured (2026-09-14)
+
+Sixteen countries, from Geofabrik's headers rather than from guesswork:
+
+| | |
+| --- | --- |
+| download | **12.86 GB** (20 countries, measured 2026-09-14) |
+| peak working disk (raw kept + filtered + merged) | **~14.8 GB** |
+| peak memory, one country at a time | **1343 MB** (germany) |
+| free on the box | 120 GB |
+
+The list is lopsided, which is worth knowing when trimming it again: germany
+4.51, italy 2.08 and poland 1.95 are 8.5 of the 12.9 GB, while liechtenstein,
+luxembourg, macedonia, montenegro and albania together come to about 0.15 GB.
+The whole Adriatic chain added afterwards -- Slovenia, Croatia, Bosnia,
+Albania -- cost 0.68 GB between them. That is the number worth remembering: a
+country you might merely pass through is close to free to have, and leaving it
+out costs a leg of the ride with no closures checked.
+
+Germany, Greece and Italy are already downloaded, so a full build from here
+fetches about 5.3 GB rather than 12.2 -- raw files are kept and reused.
+
+Two claims made during this that were wrong and are worth not repeating:
+
+- "Germany is the largest extract in the list" was false while France was in
+  it. France is 4.73 GB against Germany's 4.51. It is true now, which makes the
+  1343 MB rehearsal figure the real ceiling -- but it was right by luck until
+  France was dropped.
+- France looked removable because it was on neither trip. It was in fact
+  carrying the Luxembourg-Switzerland leg, which needs a country in between.
+  Germany does that too, so the removal stands.
+
+**Still unmeasured: the import.** Greece and Italy, 43.7 MB of bz2, made a
+database of roughly 2.5 GB. Sixteen countries will be an order of magnitude
+more -- disk and hours rather than memory. That is the one step of the full
+build that has never been run at scale.
+
