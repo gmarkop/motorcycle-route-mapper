@@ -1229,3 +1229,37 @@ goes through the Balkans, and the German trip through Austria, Germany,
 Belgium, Luxembourg and Switzerland. Dropping it would save one of the largest
 downloads. Left in because the owner listed it.
 
+### The full-build budget, measured (2026-09-14)
+
+Sixteen countries, from Geofabrik's headers rather than from guesswork:
+
+| | |
+| --- | --- |
+| download | **12.18 GB** |
+| peak working disk (raw kept + filtered + merged) | **~14 GB** |
+| peak memory, one country at a time | **1343 MB** (germany) |
+| free on the box | 120 GB |
+
+The list is lopsided, which is worth knowing when trimming it again: germany
+4.51, italy 2.08 and poland 1.95 are 8.5 of the 12.2 GB, while liechtenstein,
+luxembourg, macedonia and montenegro together are under 0.1 GB. Six of the
+sixteen cost essentially nothing.
+
+Germany, Greece and Italy are already downloaded, so a full build from here
+fetches about 5.3 GB rather than 12.2 -- raw files are kept and reused.
+
+Two claims made during this that were wrong and are worth not repeating:
+
+- "Germany is the largest extract in the list" was false while France was in
+  it. France is 4.73 GB against Germany's 4.51. It is true now, which makes the
+  1343 MB rehearsal figure the real ceiling -- but it was right by luck until
+  France was dropped.
+- France looked removable because it was on neither trip. It was in fact
+  carrying the Luxembourg-Switzerland leg, which needs a country in between.
+  Germany does that too, so the removal stands.
+
+**Still unmeasured: the import.** Greece and Italy, 43.7 MB of bz2, made a
+database of roughly 2.5 GB. Sixteen countries will be an order of magnitude
+more -- disk and hours rather than memory. That is the one step of the full
+build that has never been run at scale.
+
