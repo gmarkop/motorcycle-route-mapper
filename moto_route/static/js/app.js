@@ -885,6 +885,19 @@ function fillPrintHeader() {
 function wirePrintExport() {
   const dialog = $('print-dialog');
   const button = $('print');
+
+  // Whatever started the print -- the dialog, Cmd-P, or Share > Print on an
+  // iPad -- the page still needs its header filled and the profile drawn in
+  // ink that shows on paper. Hanging that off the dialog meant the browser's
+  // own print command got neither.
+  window.addEventListener('beforeprint', () => {
+    fillPrintHeader();
+    if (state.profile && state.profile.length) drawProfile(state.profile, true);
+  });
+  window.addEventListener('afterprint', () => {
+    if (state.profile && state.profile.length) drawProfile(state.profile);
+  });
+
   if (!dialog || !button || typeof dialog.showModal !== 'function') return;
 
   button.addEventListener('click', () => {
@@ -920,10 +933,12 @@ function wirePrintExport() {
     };
     window.addEventListener('afterprint', restore);
 
-    window.print();
-    // Safari does not always fire afterprint; a timer is the backstop rather
-    // than leaving the page filtered to whatever was printed.
-    setTimeout(() => { if (document.body.dataset.print !== undefined) restore(); }, 2000);
+    // Out of the close handler. Safari can still be tearing down the modal's
+    // top layer when this runs, and the snapshot it takes then is not the page.
+    setTimeout(() => window.print(), 0);
+    // Safari does not always fire afterprint either; a timer is the backstop
+    // rather than leaving the page filtered to whatever was printed.
+    setTimeout(() => { if (document.body.dataset.print !== undefined) restore(); }, 3000);
   });
 }
 

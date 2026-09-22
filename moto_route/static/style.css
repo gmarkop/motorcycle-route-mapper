@@ -399,14 +399,21 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
   .verdict { border: 0.5pt solid #111; padding: 2mm; margin: 0 0 3mm; }
   .verdict.bad { border-width: 1.5pt; }
 
-  /* Only what the dialog asked for. */
-  body:not([data-print~="map"]) #map-area,
-  body:not([data-print~="profile"]) #profile-wrap,
-  body:not([data-print~="summary"]) #summary,
-  body:not([data-print~="weather"]) #weather-panel,
-  body:not([data-print~="pois"]) #fuel-panel,
-  body:not([data-print~="hazards"]) #hazard-panel,
-  body:not([data-print~="demanding"]) #demanding-panel { display: none !important; }
+  /* Only what the dialog asked for -- and everything, when nobody asked.
+     `body[data-print]` is load-bearing. Without it these read as
+     "hide unless the attribute names this section", and an absent attribute
+     names nothing, so printing from the browser's own command -- Cmd-P, or
+     Share > Print on an iPad, which is how anyone would reach for it --
+     hid every section and produced one blank page. */
+  body[data-print]:not([data-print~="map"]) #map-area,
+  body[data-print]:not([data-print~="profile"]) #profile-wrap,
+  body[data-print]:not([data-print~="summary"]) #summary,
+  body[data-print]:not([data-print~="weather"]) #weather-panel,
+  body[data-print]:not([data-print~="pois"]) #fuel-panel,
+  body[data-print]:not([data-print~="hazards"]) #hazard-panel,
+  body[data-print]:not([data-print~="demanding"]) #demanding-panel {
+    display: none !important;
+  }
 
   #profile-wrap { height: auto; border: none; padding: 0; margin-top: 4mm; }
   #profile { height: 40mm; }
