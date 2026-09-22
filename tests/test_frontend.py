@@ -71,3 +71,37 @@ def test_the_profile_has_ink_for_paper():
     assert "PROFILE_INK" in source
     assert "drawProfile(state.profile, true)" in source, \
         "the print path must redraw the profile for paper"
+
+
+def test_printing_without_the_dialog_prints_the_page():
+    """The blank page on an iPad, and on Cmd-P everywhere else.
+
+    The section rules read as "hide unless data-print names this one", and an
+    absent attribute names nothing — so the browser's own print command, which
+    never sets it, hid every section. `body[data-print]` is what makes the
+    rules apply only when someone actually chose.
+    """
+    css = (REPO / "moto_route" / "static" / "style.css").read_text()
+    printed = css[css.index("@media print"):]
+
+    hides = [line for line in printed.splitlines()
+             if "data-print~=" in line]
+    assert hides, "no section rules found"
+    for line in hides:
+        assert "body[data-print]" in line, \
+            f"unguarded rule hides a section when nobody chose: {line.strip()}"
+
+
+def test_paper_preparation_is_not_hung_off_the_dialog():
+    """Print can start from the browser, not just from our button.
+
+    Filling the header and redrawing the profile in paper ink belong on
+    beforeprint, or Share > Print produces a page with an empty header and a
+    profile drawn for a dark screen.
+    """
+    source = (REPO / "moto_route" / "static" / "js" / "app.js").read_text()
+    listener = source.index("addEventListener('beforeprint'")
+    guard = source.index("typeof dialog.showModal !== 'function'")
+
+    assert listener < guard, \
+        "beforeprint must be wired before the dialog-capability return"

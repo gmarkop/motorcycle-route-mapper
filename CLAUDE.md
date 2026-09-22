@@ -1338,3 +1338,32 @@ not load is a gap instead of a rectangle of ink. `afterprint` restores the
 filter and the screen palette, with a two-second timer behind it because Safari
 does not always fire it.
 
+### The blank page on an iPad (2026-09-22)
+
+Printing from Safari's Share > Print gave one blank sheet. Not a Safari bug --
+mine, and it did the same on Cmd-P everywhere else.
+
+The section rules were written as `body:not([data-print~="map"])`, which reads
+as "hide unless the attribute names this section". An absent attribute names
+nothing, so every optional section matched and the page printed empty. The
+dialog sets `data-print`; the browser's own print command never does, and that
+is the command anyone reaches for first.
+
+`body[data-print]` on each rule is the fix: the selection applies only when
+somebody made one, and otherwise everything prints.
+
+Two things followed from the same mistake, both from hanging paper work off the
+dialog rather than off printing:
+
+- The print header was filled and the profile redrawn in paper ink only in the
+  dialog flow, so a native print got an empty header and a profile drawn for a
+  dark screen. Both are on `beforeprint` now, which fires however a print
+  starts.
+- `window.print()` was called synchronously inside the dialog's `close`
+  handler. Safari can still be tearing down the modal's top layer at that
+  point, and the snapshot it takes then is not the page. Deferred by a timeout.
+
+The general shape is worth keeping: **a feature reached through our own button
+is also reached through the browser's**, and the second path had never been
+tried.
+
