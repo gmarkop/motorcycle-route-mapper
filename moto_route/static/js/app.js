@@ -804,6 +804,93 @@ function drawProfile(samples) {
         : '');
 }
 
+// --------------------------------------------------------------- the splitter
+
+/* Dragging the line between the map and the panels.
+ *
+ * The map is the thing you zoom into and the panels are the thing you read,
+ * and which of those wants the room changes by the minute -- tracing a pass on
+ * the map, then reading forty hotels. A fixed 58vh was always going to be
+ * wrong half the time.
+ */
+const SPLIT_KEY = 'moto-map-height';
+const MIN_MAP_PX = 120;
+const MIN_PANELS_PX = 110;
+
+function applySplit(px) {
+  const usable = document.getElementById('layout').clientHeight;
+  const clamped = Math.max(MIN_MAP_PX,
+                           Math.min(px, usable - MIN_PANELS_PX));
+  document.documentElement.style.setProperty('--map-height', `${clamped}px`);
+  $('splitter').setAttribute('aria-valuenow', String(Math.round(clamped)));
+
+  // Leaflet caches its container size, and the profile is drawn in pixels from
+  // its own. Neither notices a flexbox change on its own, and a window resize
+  // event is not fired by dragging a div.
+  mapview.resized();
+  if (state.profile && state.profile.length) drawProfile(state.profile);
+  return clamped;
+}
+
+function wireSplitter() {
+  const splitter = $('splitter');
+  const layout = document.getElementById('layout');
+  if (!splitter || !layout) return;
+
+  let saved = null;
+  try { saved = localStorage.getItem(SPLIT_KEY); } catch { /* private mode */ }
+  if (saved) applySplit(parseFloat(saved));
+
+  const remember = (px) => {
+    try { localStorage.setItem(SPLIT_KEY, String(px)); } catch { /* fine */ }
+  };
+
+  const moveTo = (clientY) => {
+    const top = layout.getBoundingClientRect().top;
+    remember(applySplit(clientY - top - splitter.offsetHeight / 2));
+  };
+
+  splitter.addEventListener('pointerdown', (event) => {
+    // Capture, so a pointer that outruns the handle keeps driving it rather
+    // than dropping the drag the moment it leaves a 9px strip.
+    splitter.setPointerCapture(event.pointerId);
+    document.body.classList.add('splitting');
+    event.preventDefault();
+  });
+  splitter.addEventListener('pointermove', (event) => {
+    if (!splitter.hasPointerCapture(event.pointerId)) return;
+    moveTo(event.clientY);
+  });
+  const release = (event) => {
+    if (splitter.hasPointerCapture(event.pointerId)) {
+      splitter.releasePointerCapture(event.pointerId);
+    }
+    document.body.classList.remove('splitting');
+  };
+  splitter.addEventListener('pointerup', release);
+  splitter.addEventListener('pointercancel', release);
+
+  // A separator you can focus but not operate is worse than one you cannot
+  // focus at all, and this is also the only way to nudge it precisely.
+  splitter.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 60 : 20;
+    const current = document.getElementById('map-area').getBoundingClientRect().height;
+    const by = { ArrowUp: -step, ArrowDown: step,
+                 PageUp: -step * 3, PageDown: step * 3 }[event.key];
+    if (by === undefined && event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault();
+    if (event.key === 'Home') remember(applySplit(MIN_MAP_PX));
+    else if (event.key === 'End') remember(applySplit(layout.clientHeight));
+    else remember(applySplit(current + by));
+  });
+
+  // A window that changed shape can leave the stored split outside its limits.
+  window.addEventListener('resize', () => {
+    const current = document.getElementById('map-area').getBoundingClientRect().height;
+    applySplit(current);
+  });
+}
+
 // Redrawn on resize: the SVG is sized in pixels from its container, so without
 // this a rotated iPad stretches the marks and the labels with them.
 let profileResize;
@@ -1038,6 +1125,7 @@ async function boot() {
   wirePlan();
   wirePoiFilters();
   wireCurvinessToggle();
+  wireSplitter();
   wireOffline();
   wireConnectivity();
 

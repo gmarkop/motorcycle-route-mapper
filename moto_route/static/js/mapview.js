@@ -78,6 +78,12 @@ export function routeLatLngs() {
   return currentRoute.lines.flat().map((p) => [p.lat, p.lon]);
 }
 
+/** Tell Leaflet its container changed size. It caches the dimensions. */
+export function resized() {
+  map.invalidateSize();
+}
+
+
 export function flyTo(lat, lon, zoom = 13) {
   map.flyTo([Number(lat), Number(lon)], zoom);
 }
