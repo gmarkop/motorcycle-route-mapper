@@ -610,8 +610,16 @@ function showProfile(payload) {
     return;
   }
   state.profile = payload.samples;
+  const wasHidden = wrap.hidden;
   wrap.hidden = false;
   drawProfile(payload.samples);
+
+  // Showing the profile takes 156 px off the map, and Leaflet caches its
+  // container size. Without this it spent the rest of the session believing
+  // it was 156 px taller than it is -- so `getBounds` was wrong, and a click
+  // landed at slightly the wrong place. Found by measuring what printing
+  // restored: printing had been quietly repairing it.
+  if (wasHidden) mapview.resized();
 }
 
 /* Hand-rolled SVG rather than a charting library: it keeps the page
@@ -882,6 +890,35 @@ function fillPrintHeader() {
     + 'current when this page was made, not when it is read.</div>';
 }
 
+/* Reframing the map for paper.
+ *
+ * The map used to print at whatever shape it had on screen, which was a claim
+ * I made and the stylesheet did not honour: print gives it 95 mm of height,
+ * so the box changed proportions, Leaflet kept the same centre and zoom, and
+ * the sheet showed a slice of the route.
+ *
+ * So the map is put into the printed box's exact pixel shape first, then asked
+ * to fit the whole route into it. Doing it in that order matters --
+ * `fitBounds` solves for the box it is given.
+ */
+let undoPaperMap = null;
+
+function mapToPaper() {
+  if (undoPaperMap) return false;
+  const view = mapview.viewState();
+  document.body.classList.add('print-map');
+  mapview.resized();
+  const fitted = mapview.fitRoute();
+
+  undoPaperMap = () => {
+    document.body.classList.remove('print-map');
+    mapview.resized();
+    mapview.restoreView(view);
+    undoPaperMap = null;
+  };
+  return fitted;
+}
+
 function wirePrintExport() {
   const dialog = $('print-dialog');
   const button = $('print');
@@ -893,9 +930,16 @@ function wirePrintExport() {
   window.addEventListener('beforeprint', () => {
     fillPrintHeader();
     if (state.profile && state.profile.length) drawProfile(state.profile, true);
+    // Nothing can be awaited here -- the browser prints as soon as this
+    // returns -- so a print started from the browser's own command gets the
+    // right framing with whatever tiles are already cached. The route line and
+    // the markers are drawn immediately either way, which is the part that
+    // cannot be looked up later.
+    mapToPaper();
   });
   window.addEventListener('afterprint', () => {
     if (state.profile && state.profile.length) drawProfile(state.profile);
+    if (undoPaperMap) undoPaperMap();
   });
 
   if (!dialog || !button || typeof dialog.showModal !== 'function') return;
@@ -928,6 +972,7 @@ function wirePrintExport() {
       state.poiFilter = before;
       if (state.poiPayload) panels.showPois(state.poiPayload, before);
       if (state.profile && state.profile.length) drawProfile(state.profile);
+      if (undoPaperMap) undoPaperMap();
       delete document.body.dataset.print;
       window.removeEventListener('afterprint', restore);
     };
@@ -935,7 +980,18 @@ function wirePrintExport() {
 
     // Out of the close handler. Safari can still be tearing down the modal's
     // top layer when this runs, and the snapshot it takes then is not the page.
-    setTimeout(() => window.print(), 0);
+    //
+    // This path can do what `beforeprint` cannot: reframe the map and then
+    // wait for the tiles that reframing asked for. Without the wait the new
+    // view prints with the old view's tiles, which after a zoom change is
+    // usually none of them.
+    setTimeout(async () => {
+      if (sections.includes('map')) {
+        mapToPaper();
+        await mapview.tilesSettled();
+      }
+      window.print();
+    }, 0);
     // Safari does not always fire afterprint either; a timer is the backstop
     // rather than leaving the page filtered to whatever was printed.
     setTimeout(() => { if (document.body.dataset.print !== undefined) restore(); }, 3000);

@@ -319,6 +319,19 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
 #print-options .count { color: var(--muted); font-size: 12px; }
 #print-header { display: none; }
 
+/* The map, briefly wearing its paper shape.
+ *
+ * A4 less 12 mm margins is 186 mm wide, and the print rule gives the map 95 mm
+ * of height. At 96 dpi that is 703 x 359 CSS pixels, and the numbers have to
+ * match: `fitBounds` solves for the box it is given, so fitting the route in a
+ * 1280x476 box and then printing it into a 703x359 one shows a fraction of the
+ * route -- which is exactly what it did. */
+body.print-map #map-area { flex: 0 0 auto; }
+/* `flex-basis`, not just `height`. #map is `flex: 1` inside a column, and in a
+   flex container the basis decides the main size -- a plain `height` here was
+   ignored and the map measured 703x0, which fits no route at all. */
+body.print-map #map { flex: 0 0 359px; width: 703px; height: 359px; }
+
 /* ------------------------------------------------------------------ print
 
    The app is dark because a map reads better against dark chrome. Paper is
@@ -372,6 +385,8 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
   #map-area { flex: none; display: block; }
   /* White, not the screen's near-black: a tile that did not load should print
      as a gap rather than as a solid rectangle of ink. */
+  /* 95 mm, matching the 359 px the map was fitted into. Changing one of these
+     without the other is the bug this pair exists to prevent. */
   #map { height: 95mm; border: 0.5pt solid #999; background: #fff; }
   /* The header already names the route; the panel heading would say it twice. */
   #route-name { display: none; }

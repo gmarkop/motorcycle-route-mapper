@@ -84,6 +84,45 @@ export function resized() {
 }
 
 
+/** Frame the whole route. Returns false if there is no route to frame. */
+export function fitRoute(padding = 14) {
+  const points = routeLatLngs();
+  if (points.length < 2) return false;
+  map.fitBounds(L.latLngBounds(points), { padding: [padding, padding],
+                                          animate: false });
+  return true;
+}
+
+
+/** The current centre and zoom, to put back afterwards. */
+export function viewState() {
+  return { center: map.getCenter(), zoom: map.getZoom() };
+}
+
+
+export function restoreView(view) {
+  if (view) map.setView(view.center, view.zoom, { animate: false });
+}
+
+
+/**
+ * Resolve once the visible tiles have arrived, or after `timeoutMs`.
+ *
+ * Leaflet fires `load` on a tile layer when every tile for the current view is
+ * in. Without waiting for it, a map reframed for paper prints whichever tiles
+ * happened to be there -- which after a zoom change is usually none of them.
+ */
+export function tilesSettled(timeoutMs = 2500) {
+  const layer = baseLayerObjects[activeBaseName];
+  if (!layer) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); layer.off('load', done); resolve(); };
+    const timer = setTimeout(done, timeoutMs);
+    layer.on('load', done);
+  });
+}
+
+
 export function flyTo(lat, lon, zoom = 13) {
   map.flyTo([Number(lat), Number(lon)], zoom);
 }

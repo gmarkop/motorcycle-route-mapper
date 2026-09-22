@@ -1367,3 +1367,37 @@ The general shape is worth keeping: **a feature reached through our own button
 is also reached through the browser's**, and the second path had never been
 tried.
 
+### The printed map showed a slice of the route (2026-09-22)
+
+"The map prints as you framed it" was a claim the stylesheet did not honour:
+print gives the map 95 mm of height, a different shape from the screen box, and
+Leaflet keeps centre and zoom when its container changes. A differently
+proportioned box at the same zoom shows less.
+
+The map is now put into the printed box's exact pixel shape *first* and then
+asked to fit the whole route, because `fitBounds` solves for the box it is
+given. A4 less 12 mm margins is 186 x 95 mm, which at 96 dpi is **703 x 359**
+CSS pixels; the screen-side `.print-map` box and the `@media print` rule have
+to agree, and a test holds them together.
+
+Three things found by measuring rather than reading:
+
+- `body.print-map #map { height: 359px }` produced a box of **703x0**. `#map`
+  is `flex: 1` inside a column, and in a flex container the basis decides the
+  main size -- a plain height is ignored. It needs `flex: 0 0 359px`.
+- **Leaflet's cached size was already wrong, before printing.** Showing the
+  elevation profile takes 156 px off the map and nothing told Leaflet, so it
+  spent the session believing its container was 156 px taller than it was --
+  `getBounds` wrong, clicks landing slightly off. Printing had been repairing
+  it by accident, which is how it surfaced: the restore looked broken and was
+  the first honest measurement. `showProfile` now calls `resized()`.
+- A `requestAnimationFrame` around the restore, added on the theory that
+  `invalidateSize` was reading a stale layout, fixed nothing and was removed.
+  The measurement disproved the diagnosis; the code went with it.
+
+The dialog path reframes and then awaits `tilesSettled()`, because a view that
+just changed zoom has none of its tiles yet. `beforeprint` cannot await
+anything -- the browser prints as soon as it returns -- so a print started from
+the browser's own command gets the right framing with whatever tiles are
+cached, and the route line and markers, which are drawn immediately.
+
