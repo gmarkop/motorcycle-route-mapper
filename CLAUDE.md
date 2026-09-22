@@ -1302,3 +1302,39 @@ exactly 611, persisted across a reload, and a drag aimed at y=2000 stopping at
 710 in an 820 px window -- which is the clamp doing arithmetic rather than
 luck.
 
+### Print / save as PDF (2026-09-22)
+
+The browser already turns a page into a PDF, and a route sheet is a page: a
+map, some headings, some lists. What was missing was choosing what goes on it
+and a palette that does not spend a cartridge on a dark background. So there is
+no PDF library and no headless renderer -- which also keeps this off a 1.9 GB
+box that has enough to do.
+
+The POI categories are driven through `state.poiFilter`, so printed lists come
+out of the renderer the screen already uses. A second path that formatted POIs
+for paper would be a second place for them to disagree.
+
+**The map prints at its on-screen size, deliberately.** Resizing it for paper
+means telling Leaflet, waiting for tiles that may not come, and printing
+whatever arrived -- and the split handle already lets the rider frame it and
+see the result.
+
+Four things that only showed up by rendering it:
+
+- `display: block` on `#layout` printed the **sidebar first and no map at
+  all**. The sidebar comes first in the document and only `order` puts the map
+  above it; block layout discards `order` and the flex basis that gives the map
+  its height. Print keeps flex, with its own order and an explicit map height.
+- The profile printed as a **dark block with invisible labels**. Its grid and
+  label colours are SVG attributes, not CSS, so the stylesheet cannot reach
+  them -- it is redrawn with a paper palette instead.
+- Panel backgrounds stayed dark, which is the ink the light palette exists to
+  save.
+- The route name appeared twice, once in the print header and once as the
+  summary panel's heading.
+
+`#map` prints on white rather than the screen's near-black, so a tile that did
+not load is a gap instead of a rectangle of ink. `afterprint` restores the
+filter and the screen palette, with a two-second timer behind it because Safari
+does not always fire it.
+

@@ -303,3 +303,113 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
   cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 6px;
 }
 .icon-button:hover { color: var(--bad); }
+
+/* ------------------------------------------------------------- the dialog */
+
+#print-dialog {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 18px; max-width: 420px;
+}
+#print-dialog::backdrop { background: #000a; }
+#print-dialog menu { display: flex; gap: 8px; justify-content: flex-end;
+                     margin: 16px 0 0; padding: 0; }
+#print-options { display: grid; gap: 6px; margin-top: 12px; }
+#print-options label { display: flex; align-items: center; gap: 8px; }
+#print-options .count { color: var(--muted); font-size: 12px; }
+#print-header { display: none; }
+
+/* ------------------------------------------------------------------ print
+
+   The app is dark because a map reads better against dark chrome. Paper is
+   not, and printing the screen palette would spend a cartridge on the
+   background. So print gets its own light one, and only the parts the export
+   dialog asked for: `data-print` carries the selection and every optional
+   section is hidden unless its word appears in it.
+
+   The map prints at whatever size it has on screen. That is deliberate --
+   resizing it for paper means telling Leaflet, waiting for tiles that may not
+   come, and printing whatever had arrived by then. Framing it with the split
+   handle is a thing the rider can see the result of. */
+@media print {
+  @page { size: A4; margin: 12mm; }
+
+  html, body { height: auto; background: #fff; color: #111; }
+
+  /* Still a flex column, with print's own order. `display: block` was the
+     obvious move and put the sidebar first, because the sidebar comes first in
+     the document -- it is only `order` that puts the map on top on screen, and
+     block layout throws `order` away along with the flex basis that gives the
+     map its height. */
+  #layout { display: flex; flex-direction: column; height: auto; }
+  #print-header { order: 0; }
+  #map-area { order: 1; }
+  #sidebar { order: 2; }
+
+  /* Nothing in here keeps a screen background: a panel printed dark is the
+     cartridge this palette exists to save. Borders and marks are restated
+     where they matter. */
+  #sidebar, #sidebar *, #profile-wrap, .panel, .banner, .verdict {
+    background: #fff !important; color: #111;
+  }
+
+  /* Chrome, controls and anything that is not the ride. */
+  #splitter, #drop-zone, #plan, #saved-panel, #offline-panel, #cache-banner,
+  #error, .chips, #curviness-legend, #map-overlay, header,
+  .leaflet-control-container, #print-dialog, .clickable .badge,
+  #alternate-panel, #incident-panel { display: none !important; }
+
+  #print-header {
+    display: block; margin: 0 0 6mm; padding: 0 0 3mm;
+    border-bottom: 1.5pt solid #111;
+  }
+  #print-header h1 { font-size: 16pt; margin: 0 0 2mm; }
+  #print-header .facts { font-size: 9pt; color: #444; }
+
+  /* An explicit height, because flex-basis on #map-area is a screen-layout
+     idea and `#map { flex: 1 }` inside an auto-height box is zero. 95mm is
+     about a third of the usable page. */
+  #map-area { flex: none; display: block; }
+  /* White, not the screen's near-black: a tile that did not load should print
+     as a gap rather than as a solid rectangle of ink. */
+  #map { height: 95mm; border: 0.5pt solid #999; background: #fff; }
+  /* The header already names the route; the panel heading would say it twice. */
+  #route-name { display: none; }
+  /* Tiles and the route line are the point of printing a map at all. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  #sidebar {
+    display: block; width: auto; overflow: visible; padding: 0;
+    background: #fff; border: none;
+  }
+  .panel {
+    background: #fff; border: none; padding: 0; margin: 0 0 6mm;
+    break-inside: auto;
+  }
+  .panel h2 {
+    font-size: 11pt; color: #111; border-bottom: 0.5pt solid #bbb;
+    padding-bottom: 1mm; margin: 0 0 2mm; break-after: avoid;
+  }
+  .list li {
+    break-inside: avoid; padding: 1mm 0; border-bottom: 0.25pt solid #ddd;
+    font-size: 9pt;
+  }
+  .where { font-weight: 600; min-width: 16mm; display: inline-block; }
+  .muted, .tiny, .warn-text { color: #555; }
+  .verdict { border: 0.5pt solid #111; padding: 2mm; margin: 0 0 3mm; }
+  .verdict.bad { border-width: 1.5pt; }
+
+  /* Only what the dialog asked for. */
+  body:not([data-print~="map"]) #map-area,
+  body:not([data-print~="profile"]) #profile-wrap,
+  body:not([data-print~="summary"]) #summary,
+  body:not([data-print~="weather"]) #weather-panel,
+  body:not([data-print~="pois"]) #fuel-panel,
+  body:not([data-print~="hazards"]) #hazard-panel,
+  body:not([data-print~="demanding"]) #demanding-panel { display: none !important; }
+
+  #profile-wrap { height: auto; border: none; padding: 0; margin-top: 4mm; }
+  #profile { height: 40mm; }
+  #profile-readout { display: none; }
+  #profile-legend { position: static; justify-content: flex-start; margin-top: 1mm; }
+}
