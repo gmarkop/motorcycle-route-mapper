@@ -1275,3 +1275,30 @@ database of roughly 2.5 GB. Sixteen countries will be an order of magnitude
 more -- disk and hours rather than memory. That is the one step of the full
 build that has never been run at scale.
 
+### The split between map and panels is draggable (2026-09-22)
+
+A fixed 58vh was always going to be wrong half the time: the map is what you
+zoom into and the panels are what you read, and which of them wants the room
+changes by the minute. The split is a `--map-height` custom property now, and
+the handle sets it.
+
+Three things the handle has to do that are easy to leave out:
+
+- **Tell Leaflet.** It caches its container size and a flexbox change fires no
+  resize event, so `mapview.resized()` calls `invalidateSize()` on every move.
+  The profile is redrawn for the same reason -- it is sized in pixels from its
+  own container.
+- **Capture the pointer.** Without `setPointerCapture` the drag dies the moment
+  the pointer outruns a 9 px strip, which is most drags. Pointer events rather
+  than mouse events, as everywhere else here, because this is used on an iPad.
+- **Answer the keyboard.** A separator that takes focus and ignores arrow keys
+  is worse than one that cannot be focused. Arrows nudge 20 px, Shift 60,
+  Home/End go to the limits.
+
+Clamped to 120 px of map and 110 px of panels, re-clamped on window resize
+since a stored split can fall outside a window that changed shape, and kept in
+`localStorage`. Verified by driving it: drag 476 to 651, ArrowUp twice to
+exactly 611, persisted across a reload, and a drag aimed at y=2000 stopping at
+710 in an 820 px window -- which is the clamp doing arithmetic rather than
+luck.
+

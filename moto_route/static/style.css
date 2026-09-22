@@ -40,15 +40,41 @@ html, body {
 
 #map-area {
   order: 1;
-  flex: 0 0 58vh;
+  /* The split is a variable so the splitter can move it without this rule
+     having to know anything about dragging. 58vh is only where it starts. */
+  flex: 0 0 var(--map-height, 58vh);
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 #map { flex: 1; background: #0e1013; }
 
-#sidebar {
+/* The handle between them. Deliberately a little taller than it looks: the
+   visible rule is 1px, the grab area is 9px, because a 1px drag target is a
+   fight on a trackpad and impossible with a finger. */
+#splitter {
   order: 2;
+  flex: 0 0 9px;
+  cursor: row-resize;
+  background: var(--border);
+  background-clip: content-box;
+  padding: 4px 0;
+  touch-action: none;
+  position: relative;
+}
+#splitter::after {
+  content: ""; position: absolute; left: 50%; top: 2px;
+  width: 40px; height: 5px; margin-left: -20px; border-radius: 3px;
+  background: var(--border);
+}
+#splitter:hover::after, #splitter:focus-visible::after { background: var(--accent); }
+#splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* While dragging, the cursor belongs to the whole window: a pointer that
+   outruns the handle should not change shape or start selecting the page. */
+body.splitting { cursor: row-resize; user-select: none; }
+
+#sidebar {
+  order: 3;
   width: 100%;
   flex: 1 1 auto;
   min-height: 0;             /* or the panels push the map off the screen */
