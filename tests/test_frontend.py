@@ -105,3 +105,47 @@ def test_paper_preparation_is_not_hung_off_the_dialog():
 
     assert listener < guard, \
         "beforeprint must be wired before the dialog-capability return"
+
+
+def test_the_paper_map_box_is_sized_by_flex_basis():
+    """`height` alone is ignored on a flex item, and the map measured 703x0.
+
+    #map is `flex: 1` inside a column, where the basis decides the main size.
+    Setting only a height produced a zero-height box, and `fitBounds` into a
+    zero-height box frames nothing at all.
+    """
+    css = (REPO / "moto_route" / "static" / "style.css").read_text()
+    rule = css[css.index("body.print-map #map {"):]
+    rule = rule[:rule.index("}")]
+
+    assert "flex:" in rule, "the paper map box needs a flex basis, not just a height"
+    assert "359px" in rule and "703px" in rule
+
+
+def test_the_paper_box_matches_the_printed_box():
+    """fitBounds solves for the box it is given, so the two must agree.
+
+    186mm x 95mm of A4 at 96dpi is 703 x 359 CSS pixels. Fitting the route into
+    one shape and printing it into another is what showed a fraction of it.
+    """
+    css = (REPO / "moto_route" / "static" / "style.css").read_text()
+
+    assert "703px" in css and "359px" in css, "screen-side paper box"
+    assert "#map { height: 95mm" in css, "print-side box"
+    assert round(186 / 25.4 * 96) == 703 and round(95 / 25.4 * 96) == 359
+
+
+def test_showing_the_profile_tells_leaflet_the_map_shrank():
+    """The profile takes 156px off the map, and Leaflet caches its size.
+
+    Found by measuring what printing restored: Leaflet had been carrying a
+    container 156px taller than the real one for the whole session, so
+    getBounds was wrong and clicks landed slightly off. Printing had been
+    repairing it by accident.
+    """
+    source = (REPO / "moto_route" / "static" / "js" / "app.js").read_text()
+    body = source[source.index("function showProfile("):]
+    body = body[:body.index("\n}\n")]
+
+    assert "mapview.resized()" in body, \
+        "unhiding the profile must tell Leaflet the map got shorter"
