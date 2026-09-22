@@ -50,6 +50,7 @@
         <input type="range" id="tank" min="80" max="500" step="10" value="250">
         <button type="button" id="refresh" class="primary">Refresh live data</button>
         <button type="button" id="export" class="secondary">Download enriched GPX</button>
+        <button type="button" id="print" class="secondary">Print / save as PDF…</button>
         <p class="muted tiny">Folds the weather warnings, closures and fuel stops
           into a GPX your Garmin can read.</p>
       </section>
@@ -118,6 +119,21 @@
         Closure data reflects long-lived OSM restrictions, not live traffic.
       </footer>
     </aside>
+
+    <dialog id="print-dialog">
+      <form method="dialog">
+        <h2>What goes on the page</h2>
+        <p class="muted tiny">The map prints as you have framed it on screen —
+          drag the split line first if you want it larger.</p>
+        <div id="print-options"></div>
+        <menu>
+          <button value="cancel" class="secondary">Cancel</button>
+          <button value="print" class="primary">Print</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <div id="print-header" aria-hidden="true"></div>
 
     <div id="splitter" role="separator" aria-orientation="horizontal"
          aria-label="Resize the map" tabindex="0"

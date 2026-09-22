@@ -11,7 +11,7 @@ import * as mapview from './mapview.js';
 import * as panels from './panels.js';
 import * as tiles from './tiles.js';
 import * as store from './store.js';
-import { curvinessGradient } from './format.js';
+import { curvinessGradient, esc } from './format.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -648,7 +648,18 @@ function niceStep(span) {
   return [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) || rough;
 }
 
-function drawProfile(samples) {
+/* Ink for the profile's own chrome. The gradient colours are saturated and
+ * read on either surface, but the grid and the labels were picked against a
+ * dark panel and are invisible on paper. They are SVG attributes rather than
+ * CSS, so a print stylesheet cannot reach them -- the profile is redrawn
+ * instead, which is cheap and the only honest option. */
+const PROFILE_INK = {
+  screen: { grid: '#2e343f', label: '#9aa3b2', fill: '#ffffff0d', mark: '#e6e9ef' },
+  paper: { grid: '#c9ced6', label: '#444444', fill: '#00000008', mark: '#111111' },
+};
+
+function drawProfile(samples, forPaper = false) {
+  const ink = forPaper ? PROFILE_INK.paper : PROFILE_INK.screen;
   const svg = $('profile');
   const width = svg.clientWidth || 800;
   const height = svg.clientHeight || 110;
@@ -693,8 +704,8 @@ function drawProfile(samples) {
   for (let e = gridLow; e <= gridHigh + 0.001; e += step) {
     parts.push(
       `<line x1="${padL}" y1="${y(e).toFixed(1)}" x2="${width - padR}" `
-      + `y2="${y(e).toFixed(1)}" stroke="#2e343f" stroke-width="1"/>`
-      + `<text x="${padL - 6}" y="${(y(e) + 3.5).toFixed(1)}" fill="#9aa3b2" `
+      + `y2="${y(e).toFixed(1)}" stroke="${ink.grid}" stroke-width="1"/>`
+      + `<text x="${padL - 6}" y="${(y(e) + 3.5).toFixed(1)}" fill="${ink.label}" `
       + `font-size="10" text-anchor="end">${Math.round(e)}</text>`);
   }
 
@@ -702,7 +713,7 @@ function drawProfile(samples) {
     .map((s, i) => `${i ? 'L' : 'M'}${x(s.distance_m).toFixed(1)},${y(s.ele).toFixed(1)}`)
     .join('');
   parts.push(`<path d="${path}L${x(maxDistance).toFixed(1)},${height - padB}`
-             + `L${padL},${height - padB}Z" fill="#ffffff0d"/>`);
+             + `L${padL},${height - padB}Z" fill="${ink.fill}"/>`);
 
   // Consecutive samples in the same band become one path, so a 300-sample
   // route draws a handful of strokes instead of three hundred.
@@ -724,15 +735,15 @@ function drawProfile(samples) {
 
   const kmStep = niceStep(maxDistance / 1000) * 1000;
   for (let d = 0; d <= maxDistance + 1; d += kmStep) {
-    parts.push(`<text x="${x(d).toFixed(1)}" y="${height - 4}" fill="#9aa3b2" `
+    parts.push(`<text x="${x(d).toFixed(1)}" y="${height - 4}" fill="${ink.label}" `
                + `font-size="10" text-anchor="middle">${Math.round(d / 1000)}</text>`);
   }
 
   // The crosshair, hidden until pointed at.
   parts.push('<line id="profile-cross" x1="0" y1="' + padT + '" x2="0" y2="'
-             + (height - padB) + '" stroke="#e6e9ef" stroke-width="1" '
+             + (height - padB) + `" stroke="${ink.mark}" stroke-width="1" `
              + 'stroke-dasharray="2 2" opacity="0"/>'
-             + '<circle id="profile-dot" r="4.5" fill="#e6e9ef" stroke="#14171c" '
+             + `<circle id="profile-dot" r="4.5" fill="${ink.mark}" stroke="#14171c" `
              + 'stroke-width="2" opacity="0"/>');
 
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -802,6 +813,118 @@ function drawProfile(samples) {
         ? '<span class="swatch demanding-key" title="Twisty and steep"></span>'
           + '<span class="tiny muted">twisty &amp; steep</span>'
         : '');
+}
+
+// ------------------------------------------------------------ print / PDF
+
+/* Printing is the export. The browser already turns a page into a PDF, and a
+ * route sheet is a page: a map, some headings and some lists. What was missing
+ * was choosing what goes on it and a palette that does not spend a cartridge
+ * on a dark background.
+ *
+ * The POI categories are driven through `state.poiFilter`, so the printed
+ * lists come out of the renderer the screen already uses. A second code path
+ * that formatted POIs for paper would be a second place for them to disagree.
+ */
+const PRINT_SECTIONS = [
+  { key: 'summary', label: 'Route summary', always: true },
+  { key: 'map', label: 'Map, as framed on screen' },
+  { key: 'profile', label: 'Elevation profile' },
+  { key: 'poi:fuel', label: 'Fuel stops' },
+  { key: 'poi:cafe', label: 'Coffee' },
+  { key: 'poi:viewpoint', label: 'Viewpoints' },
+  { key: 'poi:accommodation', label: 'Places to stay' },
+  { key: 'poi:motorcycle_parking', label: 'Motorcycle parking' },
+  { key: 'hazards', label: 'Closures & roadworks' },
+  { key: 'demanding', label: 'Twisty & steep stretches' },
+  { key: 'weather', label: 'Weather along the route' },
+];
+
+function printCount(key) {
+  if (key.startsWith('poi:')) {
+    const counts = (state.poiPayload && state.poiPayload.counts) || {};
+    return counts[key.slice(4)];
+  }
+  // Counted off the rendered list rather than from a payload held for the
+  // purpose: the panel is what got drawn, so it is what would get printed.
+  const list = { hazards: 'hazard-list', demanding: 'demanding-list' }[key];
+  if (!list) return undefined;
+  const items = document.querySelectorAll(`#${list} li:not(.muted)`).length;
+  return items || undefined;
+}
+
+function buildPrintOptions() {
+  const box = $('print-options');
+  box.innerHTML = PRINT_SECTIONS.map(({ key, label, always }) => {
+    const n = printCount(key);
+    // Default to what is on screen: a category you switched off is one you
+    // said you did not want, and the dialog should not argue.
+    const on = always || (key.startsWith('poi:')
+      ? state.poiFilter.has(key.slice(4))
+      : true);
+    return `<label><input type="checkbox" name="section" value="${key}"
+              ${on ? 'checked' : ''} ${always ? 'disabled' : ''}>
+            <span>${label}</span>
+            ${n === undefined ? '' : `<span class="count">(${n})</span>`}</label>`;
+  }).join('');
+}
+
+function fillPrintHeader() {
+  // Read back from the summary panel, which already holds the route's name and
+  // distance in the form they were rendered. Keeping a second copy in `state`
+  // just for the header would be a second thing that can be out of date.
+  // Name and date only. Distance, ascent and the rest are in the summary panel,
+  // which is always printed, and saying them twice on one sheet is noise.
+  const name = ($('route-name').textContent || 'Route').trim();
+  $('print-header').innerHTML =
+    `<h1>${esc(name)}</h1><div class="facts">Printed `
+    + `${esc(new Date().toLocaleDateString())} — closures and weather were `
+    + 'current when this page was made, not when it is read.</div>';
+}
+
+function wirePrintExport() {
+  const dialog = $('print-dialog');
+  const button = $('print');
+  if (!dialog || !button || typeof dialog.showModal !== 'function') return;
+
+  button.addEventListener('click', () => {
+    buildPrintOptions();
+    dialog.showModal();
+  });
+
+  dialog.addEventListener('close', () => {
+    if (dialog.returnValue !== 'print') return;
+
+    const chosen = [...dialog.querySelectorAll('input[name=section]:checked')]
+      .map((input) => input.value);
+    const categories = new Set(chosen.filter((k) => k.startsWith('poi:'))
+                                     .map((k) => k.slice(4)));
+
+    const sections = chosen.filter((k) => !k.startsWith('poi:'));
+    if (categories.size) sections.push('pois');
+    document.body.dataset.print = sections.join(' ');
+
+    // Swap the filter, redraw through the normal path, print, put it back.
+    const before = state.poiFilter;
+    state.poiFilter = categories;
+    if (state.poiPayload) panels.showPois(state.poiPayload, categories);
+    if (state.profile && state.profile.length) drawProfile(state.profile, true);
+    fillPrintHeader();
+
+    const restore = () => {
+      state.poiFilter = before;
+      if (state.poiPayload) panels.showPois(state.poiPayload, before);
+      if (state.profile && state.profile.length) drawProfile(state.profile);
+      delete document.body.dataset.print;
+      window.removeEventListener('afterprint', restore);
+    };
+    window.addEventListener('afterprint', restore);
+
+    window.print();
+    // Safari does not always fire afterprint; a timer is the backstop rather
+    // than leaving the page filtered to whatever was printed.
+    setTimeout(() => { if (document.body.dataset.print !== undefined) restore(); }, 2000);
+  });
 }
 
 // --------------------------------------------------------------- the splitter
@@ -1126,6 +1249,7 @@ async function boot() {
   wirePoiFilters();
   wireCurvinessToggle();
   wireSplitter();
+  wirePrintExport();
   wireOffline();
   wireConnectivity();
 

@@ -41,3 +41,33 @@ def test_the_demanding_panel_does_not_depend_on_curviness_succeeding():
     guarded = body[:body.index("showDemanding(payload);")]
     assert "return;" not in guarded, \
         "showDemanding is behind an early return again"
+
+
+def test_print_keeps_the_flex_order_that_puts_the_map_on_top():
+    """`display: block` in the print block was the obvious move and was wrong.
+
+    The sidebar comes first in the document — only `order` puts the map above
+    it — so block layout printed the panels first, and threw away the flex
+    basis that gives the map its height along with them. Rendered, that was a
+    sheet with the lists at the top and no map at all.
+    """
+    css = (REPO / "moto_route" / "static" / "style.css").read_text()
+    printed = css[css.index("@media print"):]
+
+    assert "#layout { display: flex;" in printed, \
+        "print must keep flex, or the sidebar leads and the map collapses"
+    assert "#map { height:" in printed, \
+        "the map needs an explicit print height; flex-basis will not apply"
+
+
+def test_the_profile_has_ink_for_paper():
+    """Its grid and labels are SVG attributes, which a stylesheet cannot reach.
+
+    Picked against a dark panel, they are invisible on white, so the profile is
+    redrawn for print rather than restyled.
+    """
+    source = (REPO / "moto_route" / "static" / "js" / "app.js").read_text()
+
+    assert "PROFILE_INK" in source
+    assert "drawProfile(state.profile, true)" in source, \
+        "the print path must redraw the profile for paper"
