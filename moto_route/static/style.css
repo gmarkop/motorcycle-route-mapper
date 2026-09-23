@@ -392,6 +392,11 @@ body.print-map #map { flex: 0 0 359px; width: 703px; height: 359px; }
   #route-name { display: none; }
   /* Tiles and the route line are the point of printing a map at all. */
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Leaflet fades a tile in, and a snapshot taken mid-fade prints the part of
+     the fade it caught -- which can be nothing. On paper there is no animation
+     worth having, so they are simply opaque. */
+  .leaflet-tile { opacity: 1 !important; visibility: visible !important; }
+  .leaflet-fade-anim .leaflet-tile { transition: none !important; }
 
   #sidebar {
     display: block; width: auto; overflow: visible; padding: 0;

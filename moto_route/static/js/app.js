@@ -919,6 +919,19 @@ function mapToPaper() {
   return fitted;
 }
 
+/** A line under the print button, for something the sheet will be missing. */
+function showPrintNote(message) {
+  let note = $('print-note');
+  if (!note) {
+    note = document.createElement('p');
+    note.id = 'print-note';
+    note.className = 'tiny warn-text';
+    $('print').insertAdjacentElement('afterend', note);
+  }
+  note.textContent = message;
+}
+
+
 function wirePrintExport() {
   const dialog = $('print-dialog');
   const button = $('print');
@@ -951,6 +964,9 @@ function wirePrintExport() {
 
   dialog.addEventListener('close', () => {
     if (dialog.returnValue !== 'print') return;
+
+    const stale = $('print-note');
+    if (stale) stale.remove();
 
     const chosen = [...dialog.querySelectorAll('input[name=section]:checked')]
       .map((input) => input.value);
@@ -988,7 +1004,26 @@ function wirePrintExport() {
     setTimeout(async () => {
       if (sections.includes('map')) {
         mapToPaper();
-        await mapview.tilesSettled();
+        // Reframing means a new zoom, and a new zoom means every tile is a
+        // fresh fetch. Printing without waiting produced a sheet with the
+        // route drawn over nothing at all.
+        button.disabled = true;
+        const was = button.textContent;
+        button.textContent = 'Preparing the map…';
+        const tiles = await mapview.tilesSettled();
+        button.textContent = was;
+        button.disabled = false;
+        // Say what the sheet will be short of, rather than printing it and
+        // leaving the rider to work out why the map is empty. Printing anyway
+        // is right -- the lists and the profile are most of the value.
+        if (tiles.blank && tiles.blank === tiles.tiles) {
+          showPrintNote('The map will print without its background: none of '
+            + 'these tiles are cached and they could not be fetched. '
+            + 'Save tiles for offline use, or check the connection.');
+        } else if (tiles.timedOut) {
+          showPrintNote(`Printing with ${tiles.pending} of ${tiles.tiles} map `
+            + 'tiles still loading — the map may have gaps.');
+        }
       }
       window.print();
     }, 0);
