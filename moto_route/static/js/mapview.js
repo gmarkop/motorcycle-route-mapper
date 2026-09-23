@@ -106,19 +106,46 @@ export function restoreView(view) {
 
 
 /**
- * Resolve once the visible tiles have arrived, or after `timeoutMs`.
+ * Resolve once every tile in the map is an image that will actually print.
  *
- * Leaflet fires `load` on a tile layer when every tile for the current view is
- * in. Without waiting for it, a map reframed for paper prints whichever tiles
- * happened to be there -- which after a zoom change is usually none of them.
+ * The first version waited on the layer's `load` event with a 2.5 s cap, and a
+ * printed sheet came back with the route drawn over nothing: eight images in
+ * the PDF, all of them marker pins and shadows, and not one 256-pixel tile.
+ * Reframing changes the zoom, every tile for the new zoom is a fresh fetch,
+ * and the cap expired first.
+ *
+ * So the test is the images themselves -- `complete` with a non-zero
+ * `naturalWidth` is precisely "this will render" -- rather than an event that
+ * may have fired before anyone subscribed. Resolves with what it found, so the
+ * caller can say whether it gave up.
  */
-export function tilesSettled(timeoutMs = 2500) {
-  const layer = baseLayerObjects[activeBaseName];
-  if (!layer) return Promise.resolve();
+export function tilesSettled(timeoutMs = 12000) {
+  const pane = map.getPane('tilePane');
+  if (!pane) return Promise.resolve({ tiles: 0, pending: 0, timedOut: false });
+
+  const started = Date.now();
   return new Promise((resolve) => {
-    const done = () => { clearTimeout(timer); layer.off('load', done); resolve(); };
-    const timer = setTimeout(done, timeoutMs);
-    layer.on('load', done);
+    const check = () => {
+      const tiles = [...pane.querySelectorAll('img.leaflet-tile')];
+      const pending = tiles.filter((t) => !t.complete || t.naturalWidth === 0);
+      // A tile of one pixel is the service worker's transparent placeholder,
+      // handed back when it has nothing cached and cannot reach the tile
+      // server. It is `complete` with a non-zero width, so counting it as
+      // loaded is how a sheet came back with the route drawn over nothing --
+      // the wait was satisfied by eighteen invisible pixels.
+      const blank = tiles.filter((t) => t.complete && t.naturalWidth === 1);
+      if (tiles.length && !pending.length) {
+        return resolve({ tiles: tiles.length, pending: 0, blank: blank.length,
+                         timedOut: false, waitedMs: Date.now() - started });
+      }
+      if (Date.now() - started > timeoutMs) {
+        return resolve({ tiles: tiles.length, pending: pending.length,
+                         blank: blank.length, timedOut: true,
+                         waitedMs: Date.now() - started });
+      }
+      setTimeout(check, 120);
+    };
+    check();
   });
 }
 

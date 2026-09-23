@@ -149,3 +149,33 @@ def test_showing_the_profile_tells_leaflet_the_map_shrank():
 
     assert "mapview.resized()" in body, \
         "unhiding the profile must tell Leaflet the map got shorter"
+
+
+def test_a_one_pixel_tile_does_not_count_as_a_loaded_tile():
+    """The service worker's placeholder is `complete` with a non-zero width.
+
+    When it has nothing cached and cannot reach the tile server it hands back a
+    1x1 transparent PNG, so `naturalWidth > 0` is true for every tile and the
+    wait was satisfied by eighteen invisible pixels — a printed sheet with the
+    route drawn over nothing. Inspecting a real PDF found exactly that: eight
+    images, all marker pins and shadows, not one 256-pixel tile.
+    """
+    source = (REPO / "moto_route" / "static" / "js" / "mapview.js").read_text()
+    body = source[source.index("export function tilesSettled"):]
+    body = body[:body.index("\n}\n")]
+
+    assert "naturalWidth === 1" in body, \
+        "the 1x1 placeholder must be told apart from a real tile"
+
+
+def test_the_print_flow_says_when_the_map_will_be_empty():
+    """Printing anyway is right; printing silently is not.
+
+    The lists and the profile are most of the sheet's value, so a map that
+    cannot be drawn should not cancel the print — but it has to be said, or the
+    rider is left working out why the map is blank.
+    """
+    source = (REPO / "moto_route" / "static" / "js" / "app.js").read_text()
+
+    assert "tiles.blank" in source, "the blank-tile case must be handled"
+    assert "showPrintNote" in source, "and surfaced in the page, not the console"

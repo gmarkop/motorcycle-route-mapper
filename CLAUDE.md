@@ -1401,3 +1401,38 @@ anything -- the browser prints as soon as it returns -- so a print started from
 the browser's own command gets the right framing with whatever tiles are
 cached, and the route line and markers, which are drawn immediately.
 
+### The printed map had no map in it (2026-09-23)
+
+A PDF from the iPad showed the route over white. Reading the file settled it
+without guessing: **eight embedded images, all of them 41x41 marker shadows, a
+50x82 pin and four 40x40 icons. Not one 256-pixel tile.** The tiles had never
+rendered.
+
+The cause is in the service worker. On a cache miss it fetches, and when the
+fetch throws it returns `blankTile()` -- a 1x1 transparent PNG, so an uncached
+tile shows as nothing rather than as a broken-image icon. Reframing the map for
+paper changes the zoom, every tile at the new zoom is a cache miss, and a
+device that cannot reach the tile server at that moment gets eighteen
+transparent pixels.
+
+**`tilesSettled` counted them as loaded**, because a 1x1 image is `complete`
+with `naturalWidth > 0`. So the wait was satisfied instantly and the sheet
+printed. It now tells a placeholder apart by its single pixel, and the print
+flow says "the map will print without its background" in the page rather than
+printing in silence. It still prints -- the lists and the profile are most of
+the value.
+
+The offline tile cache covers zooms 9 to 13, which is where a fitted route view
+lands, so saving tiles for offline use before printing is the fix on a device
+with a poor route to the tile server.
+
+Two test-harness lessons, both of which produced confident wrong answers:
+
+- A flat-colour fake tile is optimised to a 1x1 image in the PDF, so the first
+  measurement looked exactly like the bug it was meant to detect.
+- **Playwright's `page.route` does not intercept requests made by a service
+  worker.** The fixture tiles were never served; the app was being fed the
+  worker's own placeholder. `service_workers="block"` on the context is what
+  makes tile interception work, and with it the same print produces nine
+  256x256 tiles in the PDF.
+
