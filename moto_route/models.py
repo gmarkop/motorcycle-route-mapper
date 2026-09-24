@@ -101,6 +101,16 @@ class Route:
         return sum(len(line) for line in self.lines)
 
     @property
+    def has_elevation(self) -> bool:
+        """Whether the file itself carried heights.
+
+        Needed because a flat route and a route with no elevation data both
+        produce an ascent of zero, and only one of those is an answer. Without
+        this the summary cannot tell "0 m of climbing" from "I do not know".
+        """
+        return any(p.ele is not None for p in self.iter_points())
+
+    @property
     def distance_m(self) -> float:
         """Total length, summed per line so segment gaps are not counted."""
         return sum(geo.total_distance_m([p.as_latlon() for p in line]) for line in self.lines)
@@ -190,6 +200,7 @@ class Route:
                 "waypoint_count": len(self.waypoints),
                 "ascent_m": round(ascent),
                 "descent_m": round(descent),
+                "has_elevation": self.has_elevation,
             },
             "bounds": self.bounds(),
             "metadata": self.metadata,

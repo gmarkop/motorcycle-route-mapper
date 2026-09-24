@@ -40,7 +40,13 @@ export function showSummary(route) {
   $('summary').hidden = false;
   $('route-name').textContent = route.name || 'Route';
   $('stat-distance').textContent = km(route.stats.distance_m);
-  $('stat-ascent').textContent = route.stats.ascent_m ? `${route.stats.ascent_m} m` : '–';
+  // A flat route climbs 0 m, which is an answer; a route with no heights in
+  // the file is not. `stats.ascent_m ? ... : '–'` could not tell them apart
+  // because 0 is falsy. When the file carries nothing, leave the stat pending
+  // — the elevation profile asks the terrain model and fills it in.
+  setAscentStat(route.stats.has_elevation
+    ? { available: true, source: 'file', ascent_m: route.stats.ascent_m }
+    : null);
   $('stat-points').textContent = route.stats.point_count.toLocaleString();
   $('stat-curvy').textContent = '…';
 
@@ -70,6 +76,43 @@ export function showSummary(route) {
   }
   summary.classList.remove('warn-text');
   summary.textContent = [parts.join(' · '), source].filter(Boolean).join(' — ');
+}
+
+/** True once the file's own heights have answered, so nothing overrides them. */
+let ascentFromFile = false;
+
+/**
+ * Ascent, from the file when it has heights and from the terrain model when it
+ * does not. `null` means the profile has not answered yet; a payload with
+ * `available: false` means nobody could answer, which is not the same as zero.
+ *
+ * The file's number wins when there is one. The two are computed differently
+ * -- the file total ignores changes under 3 m to suppress barometer noise,
+ * while the profile sums whole samples -- so letting the profile arrive second
+ * and overwrite would flip the stat to a slightly different number a moment
+ * after the rider first read it.
+ */
+export function setAscentStat(payload) {
+  const cell = $('stat-ascent');
+  if (ascentFromFile && payload && payload.source !== 'file') return;
+  ascentFromFile = Boolean(payload && payload.available && payload.source === 'file');
+  if (payload === null) {
+    cell.textContent = '…';
+    cell.title = 'Waiting for the terrain model — this file carries no heights.';
+    return;
+  }
+  if (!payload.available || typeof payload.ascent_m !== 'number') {
+    cell.textContent = '–';
+    cell.title = payload.reason || 'No elevation data for this route.';
+    return;
+  }
+  const dem = payload.source !== 'file';
+  // "≈" because terrain-model heights are sampled from a 90 m grid, so the
+  // total is an estimate of the climbing, not a record of it.
+  cell.textContent = dem ? `≈ ${payload.ascent_m} m` : `${payload.ascent_m} m`;
+  cell.title = payload.note || (dem
+    ? 'Estimated from the terrain model, because the file carried no heights.'
+    : 'From the heights recorded in the route file.');
 }
 
 export function setCurvinessStat(value, label) {
