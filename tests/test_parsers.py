@@ -334,3 +334,54 @@ def test_one_named_point_is_enough_to_imply_the_convention():
     route = parse_route_bytes(gpx, "mixed.gpx")
 
     assert [w.kind for w in route.waypoints] == ["via", "shaping", "shaping"]
+
+
+# ------------------------------------------------------- elevation, or the lack of it
+
+def _gpx(points: str) -> bytes:
+    return (
+        '<?xml version="1.0"?>'
+        '<gpx version="1.1" creator="t" xmlns="http://www.topografix.com/GPX/1/1">'
+        f"<trk><name>t</name><trkseg>{points}</trkseg></trk></gpx>"
+    ).encode()
+
+
+def test_a_flat_route_is_not_confused_with_a_route_that_has_no_heights():
+    """Both climb 0 m, and only one of those is an answer.
+
+    The summary used to render `stats.ascent_m ? ... : '–'`, so a genuinely
+    flat route showed the same dash as a file carrying no elevation at all --
+    0 being falsy in JavaScript. `has_elevation` is what lets the frontend
+    tell "0 m of climbing" from "I do not know", so it has to survive here.
+    """
+    flat = parse_route_bytes(_gpx(
+        '<trkpt lat="37.90" lon="23.70"><ele>12.0</ele></trkpt>'
+        '<trkpt lat="37.91" lon="23.70"><ele>12.0</ele></trkpt>'
+        '<trkpt lat="37.92" lon="23.70"><ele>12.0</ele></trkpt>'
+    ), "flat.gpx")
+    bare = parse_route_bytes(_gpx(
+        '<trkpt lat="37.90" lon="23.70"></trkpt>'
+        '<trkpt lat="37.91" lon="23.70"></trkpt>'
+        '<trkpt lat="37.92" lon="23.70"></trkpt>'
+    ), "bare.gpx")
+
+    assert flat.to_dict()["stats"]["ascent_m"] == 0
+    assert bare.to_dict()["stats"]["ascent_m"] == 0
+    assert flat.to_dict()["stats"]["has_elevation"] is True
+    assert bare.to_dict()["stats"]["has_elevation"] is False
+
+
+def test_has_elevation_is_true_when_only_some_points_carry_a_height():
+    """A partially tagged file still has something worth adding up.
+
+    Reporting it as "no elevation" would send the frontend to the terrain
+    model and throw away real recorded heights.
+    """
+    mixed = parse_route_bytes(_gpx(
+        '<trkpt lat="37.90" lon="23.70"><ele>10.0</ele></trkpt>'
+        '<trkpt lat="37.91" lon="23.70"></trkpt>'
+        '<trkpt lat="37.92" lon="23.70"><ele>90.0</ele></trkpt>'
+    ), "mixed.gpx")
+
+    assert mixed.to_dict()["stats"]["has_elevation"] is True
+    assert mixed.to_dict()["stats"]["ascent_m"] == 80

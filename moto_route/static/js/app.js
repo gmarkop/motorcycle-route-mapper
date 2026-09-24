@@ -605,6 +605,11 @@ async function loadElevation() {
 
 function showProfile(payload) {
   const wrap = $('profile-wrap');
+  // The summary's Ascent is left pending until this answers, so it has to be
+  // told either way -- including on the failure path, or it waits for ever.
+  panels.setAscentStat(payload && payload.available
+    ? payload
+    : { available: false, reason: (payload && payload.reason) || undefined });
   if (!payload || !payload.available || payload.samples.length < 2) {
     wrap.hidden = true;
     return;
