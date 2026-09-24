@@ -252,3 +252,27 @@ def test_the_file_s_own_ascent_is_not_overwritten_by_the_terrain_model():
     assert "setAscentStat(" in summary, (
         "showSummary must call the setter on every route, or the guard sticks"
     )
+
+
+def test_the_descent_line_cannot_accumulate_across_routes():
+    """`appendChild` adds; it does not replace.
+
+    Descent is rendered as a child span inside the ascent cell, so loading a
+    second route would leave the first route's descent sitting underneath the
+    new one -- and then a third, and a fourth. What prevents it is that
+    `textContent` is assigned first: writing it drops every existing child.
+
+    So the assignment has to come before the append, which is easy to reverse
+    while tidying and produces a stat that grows a line per file opened.
+    """
+    source = (JS / "panels.js").read_text()
+    setter = source[source.index("export function setAscentStat"):]
+    setter = setter[:setter.index("\n}\n")]
+
+    wipes = setter.index("cell.textContent = shown(payload.ascent_m);")
+    appends = setter.index("cell.appendChild(sub);")
+
+    assert wipes < appends, (
+        "textContent must be written before the descent span is appended, "
+        "or every route adds another line"
+    )

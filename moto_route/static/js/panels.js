@@ -45,7 +45,8 @@ export function showSummary(route) {
   // because 0 is falsy. When the file carries nothing, leave the stat pending
   // — the elevation profile asks the terrain model and fills it in.
   setAscentStat(route.stats.has_elevation
-    ? { available: true, source: 'file', ascent_m: route.stats.ascent_m }
+    ? { available: true, source: 'file',
+        ascent_m: route.stats.ascent_m, descent_m: route.stats.descent_m }
     : null);
   $('stat-points').textContent = route.stats.point_count.toLocaleString();
   $('stat-curvy').textContent = '…';
@@ -109,7 +110,19 @@ export function setAscentStat(payload) {
   const dem = payload.source !== 'file';
   // "≈" because terrain-model heights are sampled from a 90 m grid, so the
   // total is an estimate of the climbing, not a record of it.
-  cell.textContent = dem ? `≈ ${payload.ascent_m} m` : `${payload.ascent_m} m`;
+  const shown = (metres) => (dem ? `≈ ${metres} m` : `${metres} m`);
+  cell.textContent = shown(payload.ascent_m);
+
+  // Descent as a quieter second line. On a point-to-point ride the gap
+  // between the two is the net height change, which is the cheapest check
+  // there is that the figures are not nonsense.
+  if (typeof payload.descent_m === 'number') {
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = `↓ ${shown(payload.descent_m)}`;
+    cell.appendChild(sub);
+  }
+
   cell.title = payload.note || (dem
     ? 'Estimated from the terrain model, because the file carried no heights.'
     : 'From the heights recorded in the route file.');
