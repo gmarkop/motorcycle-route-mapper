@@ -142,7 +142,7 @@ def test_samples_get_increasing_arrival_times(long_route, settings):
     planned = weather.plan_samples(long_route, departure, speed_kmh=60, settings=settings)
 
     assert len(planned) >= 2
-    etas = [eta for _, _, _, eta in planned]
+    etas = [eta for _, _, _, eta, _ in planned]
     assert etas == sorted(etas)
     assert etas[0] == departure
 
@@ -150,7 +150,7 @@ def test_samples_get_increasing_arrival_times(long_route, settings):
 def test_eta_matches_distance_over_speed(long_route, settings):
     departure = datetime(2026, 6, 1, 8, tzinfo=timezone.utc)
     planned = weather.plan_samples(long_route, departure, speed_kmh=60, settings=settings)
-    _, _, distance_m, eta = planned[-1]
+    _, _, distance_m, eta, _ = planned[-1]
 
     expected_hours = (distance_m / 1000) / 60
     actual_hours = (eta - departure).total_seconds() / 3600
@@ -356,3 +356,86 @@ def test_every_wmo_code_the_api_can_return_has_a_description():
     documented = {0, 1, 2, 3, 45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67,
                   71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99}
     assert documented <= set(weather.WMO_DESCRIPTIONS)
+
+
+# ----------------------------------------------------------- wind against the route
+
+def test_wind_direction_is_read_as_where_it_comes_from():
+    """The meteorological convention is the easy thing to invert here.
+
+    A 90 degree wind is an easterly: it comes FROM the east. Riding north that
+    puts it on your right, pushing you left. Getting this backwards would
+    reverse every arrow in the panel while still looking plausible, because
+    the numbers stay the same size -- only the side changes.
+    """
+    north = 0.0
+    from_right = weather.wind_against_route(90.0, north, 60.0)
+    from_left = weather.wind_against_route(270.0, north, 60.0)
+
+    assert from_right["wind_relative"] == "crosswind from the right"
+    assert from_left["wind_relative"] == "crosswind from the left"
+    # Pushed away from where it comes from: travel is 0, so 270 is to the left.
+    assert from_right["push_deg"] == pytest.approx(270.0)
+    assert from_left["push_deg"] == pytest.approx(90.0)
+
+
+def test_a_beam_wind_is_all_crosswind_and_a_headwind_is_none():
+    beam = weather.wind_against_route(90.0, 0.0, 60.0)
+    head = weather.wind_against_route(0.0, 0.0, 60.0)
+    tail = weather.wind_against_route(180.0, 0.0, 60.0)
+
+    assert beam["crosswind_kmh"] == pytest.approx(60.0)
+    assert beam["headwind_kmh"] == pytest.approx(0.0, abs=1e-9)
+    assert head["crosswind_kmh"] == pytest.approx(0.0, abs=1e-9)
+    assert head["headwind_kmh"] == pytest.approx(60.0)
+    # Negative headwind is a tailwind, not a second kind of crosswind.
+    assert tail["headwind_kmh"] == pytest.approx(-60.0)
+    assert tail["wind_relative"] == "tailwind"
+
+
+def test_the_crosswind_label_starts_exactly_at_thirty_degrees():
+    """Two earlier versions were wrong at their own boundary.
+
+    Comparing the crosswind and headwind components puts the split at 45
+    degrees and lands on a floating-point tie; `sin(delta) >= 0.5` misses 30
+    exactly, because sin(radians(30)) is 0.49999999999999994. The rule is
+    stated in degrees, so it is checked in degrees.
+    """
+    assert weather.wind_against_route(29.0, 0.0, 60.0)["wind_relative"] == "headwind"
+    assert weather.wind_against_route(30.0, 0.0, 60.0)["wind_relative"].startswith("crosswind")
+    assert weather.wind_against_route(150.0, 0.0, 60.0)["wind_relative"].startswith("crosswind")
+    assert weather.wind_against_route(151.0, 0.0, 60.0)["wind_relative"] == "tailwind"
+
+
+def test_a_headwind_is_no_longer_announced_as_a_crosswind():
+    """The bug this feature was built on top of.
+
+    `rideability` warned "crosswind risk" on any gust over 55 km/h, having
+    never asked which way the wind was blowing -- so a gale straight down the
+    road, the one case where there is no crosswind at all, got the crosswind
+    warning. The score is unchanged: a gust is turbulent whatever its bearing.
+    """
+    nose = weather.wind_against_route(0.0, 0.0, 70.0)
+    score_head, warn_head = weather.rideability(
+        temperature_c=18.0, precipitation_mm=0.0, precipitation_probability=0,
+        gust_kmh=70.0, visibility_m=20000, weather_code=0,
+        crosswind_kmh=nose["crosswind_kmh"], wind_relative=nose["wind_relative"])
+
+    beam = weather.wind_against_route(90.0, 0.0, 70.0)
+    score_beam, warn_beam = weather.rideability(
+        temperature_c=18.0, precipitation_mm=0.0, precipitation_probability=0,
+        gust_kmh=70.0, visibility_m=20000, weather_code=0,
+        crosswind_kmh=beam["crosswind_kmh"], wind_relative=beam["wind_relative"])
+
+    assert not any("crosswind" in w for w in warn_head), warn_head
+    assert any("headwind" in w for w in warn_head), warn_head
+    assert any("crosswind from the right" in w for w in warn_beam), warn_beam
+    assert score_head == score_beam, "the gust penalty does not depend on direction"
+
+
+def test_wind_is_not_described_when_the_direction_is_unknown():
+    """An older cached forecast has no direction field, and offline rows have
+    no wind at all. Neither should invent a side."""
+    assert weather.wind_against_route(None, 0.0, 60.0) == {}
+    assert weather.wind_against_route(90.0, None, 60.0) == {}
+    assert weather.wind_against_route(90.0, 0.0, None) == {}

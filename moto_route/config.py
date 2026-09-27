@@ -110,6 +110,12 @@ class Settings:
     #: Spacing of elevation samples along the route. Fine enough to give the
     #: gradient through a bend, coarse enough that a long tour is a handful of
     #: requests rather than hundreds.
+    #: How much road either side of a weather sample is averaged to get the
+    #: direction of travel there. Two adjacent track points are metres apart,
+    #: where GPS jitter swamps the real heading; half a kilometre gives the
+    #: direction of the road.
+    wind_heading_window_m: float = field(
+        default_factory=lambda: _env_float("MOTO_WIND_HEADING_WINDOW_M", 500.0))
     elevation_sample_m: float = field(
         default_factory=lambda: _env_float("MOTO_ELEVATION_SAMPLE_M", 250.0))
     #: Hard cap on samples. Past this the spacing widens rather than the route
