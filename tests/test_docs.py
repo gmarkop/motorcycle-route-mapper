@@ -168,3 +168,25 @@ def test_the_extract_keeps_every_tag_the_app_queries():
         assert not missing, (
             f"{category} queries {key}={sorted(missing)}, which the extract "
             f"does not keep: the local server would answer 'none'")
+
+
+def test_the_readme_does_not_badly_understate_the_test_count(request):
+    """It claimed 173 while the suite ran 391 — a number nobody re-reads.
+
+    The count is the first evidence a stranger has that the project is looked
+    after, so a stale one argues against itself. The tolerance is deliberately
+    loose: this should catch a figure that has fallen years behind, not nag
+    anyone who adds a test.
+    """
+    collected = request.session.testscollected
+    if collected < 100:
+        pytest.skip("partial run; the count only means anything for the whole suite")
+
+    claimed = re.search(r"Around (\d+) of them", (REPO / "README.md").read_text())
+    assert claimed, "the README should state roughly how many tests there are"
+
+    stated = int(claimed.group(1))
+    drift = abs(collected - stated) / collected
+    assert drift < 0.20, (
+        f"README says around {stated} tests, the suite collected {collected}"
+    )

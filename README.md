@@ -388,33 +388,37 @@ To run it as a service on a home server, see **[DEPLOY.md](DEPLOY.md)**.
 
 ## Where to take it next
 
-The first five ideas that were listed here are now built. What is left:
+Deployment, licensing, the curviness map, the elevation profile, the printable
+route sheet and the offline tile cache have all since been built — see
+[`DEPLOY.md`](DEPLOY.md) to put it on a home server. What is still open:
 
-1. **`DEPLOY.md` and a systemd unit**, so it survives a reboot on a home server.
-   Bind to loopback and put Tailscale in front: that gives a real certificate
-   (so the tile cache works) and keeps an app with no authentication off the
-   public internet.
-2. **A LICENSE file** — without one, "public repo" legally means look, don't
-   touch. MIT or Apache-2.0 if you want others to use it.
-3. **More incident providers** — several European countries publish open feeds.
+1. **Verify the Autobahn provider** against the live API. It was written from
+   the documented shape of the API and is covered by tests using recorded
+   fixtures, but it has never seen real data — the build environment has no
+   outbound network. `tools/verify_autobahn.py` exists to do this from a
+   machine with a connection; until someone runs it, the mapping is an
+   educated guess.
+2. **More incident providers** — several European countries publish open feeds.
    Each is one small class implementing `IncidentProvider`; the generic GeoJSON
    adapter may already handle yours with nothing but a URL.
-4. **Verify the Autobahn provider** against the live API and adjust the mapping
-   if the real payloads differ from the documented shape.
-5. **Multi-day tours** — split a long route into days with overnight stops, and
+3. **Multi-day tours** — split a long route into days with overnight stops, and
    forecast each day from its own departure time rather than one continuous ride.
-6. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
+4. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
    ten minutes costs more than any weather.
-7. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
+5. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
    one opinion. Someone on a faired tourer with heated grips should weight cold
    and rain far lower than someone on a naked bike.
+6. **A true riding detour for stops** — the panel reports how far off the route
+   a fuel station or cafe sits, but that is the straight line to it. With no
+   junction nearby the ride there can be several times longer. Solving
+   route → stop → route through OSRM would turn an indication into a number.
 
 ---
 
 ## A note on the tests
 
-173 of them, and they run offline in about ten seconds. Two patterns are worth
-copying:
+Around 390 of them, and they run offline in about fifteen seconds. Two
+patterns are worth copying:
 
 **HTTP is mocked at the transport, not the function.** Every service test uses
 `httpx.MockTransport`, so the real request-building, status handling and JSON
