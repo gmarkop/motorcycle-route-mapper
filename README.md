@@ -367,6 +367,7 @@ All optional, all environment variables.
 | `MOTO_INCIDENT_TTL` | `600` | Incident cache lifetime, seconds |
 | `MOTO_ELEVATION_URL` | Open-Meteo | Terrain model used when the GPX carries no heights |
 | `MOTO_ELEVATION_TTL` | `2592000` | Elevation cache lifetime, seconds — terrain does not move |
+| `MOTO_WIND_HEADING_WINDOW_M` | `500` | Road either side of a weather sample averaged to get the direction of travel, for crosswind |
 | `MOTO_ELEVATION_SAMPLE_M` | `250` | Spacing of elevation samples along the route |
 | `MOTO_MAX_ELEVATION_SAMPLES` | `300` | Cap on samples. Open-Meteo counts coordinates, not requests, and allows 600 a minute |
 | `MOTO_DEMANDING_CURVINESS` | `130` | deg/km at which a stretch counts as twisty |

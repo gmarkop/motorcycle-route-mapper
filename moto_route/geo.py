@@ -39,6 +39,36 @@ def bearing_deg(a: LatLon, b: LatLon) -> float:
     return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
 
 
+def heading_at(points: Sequence[LatLon], index: int, window_m: float = 500.0) -> float | None:
+    """Direction of travel at ``index``, averaged over a window either side.
+
+    The bearing between two adjacent track points is close to meaningless: at
+    a few metres apart, GPS jitter swings it by tens of degrees. Widening to a
+    window gives the heading of the road rather than of one noisy step -- the
+    same reason :func:`curviness_deg_per_km` resamples before measuring.
+
+    Returns None when the route is too short to have a direction at all.
+    """
+    if len(points) < 2:
+        return None
+    index = max(0, min(index, len(points) - 1))
+    half = max(window_m, 1.0) / 2.0
+
+    back = index
+    while back > 0 and haversine_m(points[back], points[index]) < half:
+        back -= 1
+    ahead = index
+    last = len(points) - 1
+    while ahead < last and haversine_m(points[index], points[ahead]) < half:
+        ahead += 1
+
+    # At the very start or end the window is one-sided, which is correct: the
+    # road still has a direction there, just less of it to average over.
+    if back == ahead:
+        return None
+    return bearing_deg(points[back], points[ahead])
+
+
 def cumulative_distances(points: Sequence[LatLon]) -> list[float]:
     """Distance from the first point to each point, in metres.
 

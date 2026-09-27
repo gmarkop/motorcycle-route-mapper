@@ -261,3 +261,33 @@ def test_the_index_is_faster_than_scanning():
 
     assert indexed * 5 < scanning, (
         f"indexed {indexed:.3f}s vs scanning {scanning:.3f}s — no real gain")
+
+
+def test_heading_at_uses_a_window_rather_than_the_adjacent_point():
+    """Two track points metres apart give a bearing made of GPS jitter.
+
+    A straight line running due east, with one point knocked sideways as a
+    receiver does in a valley. The bearing across the kink is wildly wrong;
+    averaged over half a kilometre it is still east, which is where the road
+    actually goes.
+    """
+    step = 0.002  # about 170 m of longitude at this latitude
+    points = [(40.0, 23.0 + i * step) for i in range(12)]
+    points[6] = (40.0009, 23.0 + 6 * step)  # ~100 m north: a jitter spike
+
+    naive = geo.bearing_deg(points[5], points[6])
+    windowed = geo.heading_at(points, 6, window_m=500.0)
+
+    assert abs(naive - 90.0) > 20.0, "the unsmoothed bearing should be badly off"
+    assert windowed == pytest.approx(90.0, abs=5.0)
+
+
+def test_heading_at_still_answers_at_the_ends_of_the_route():
+    """The window is one-sided there, which is correct -- the road still has a
+    direction at its first point. Returning None would drop the wind reading
+    for the start and finish, which is where a rider looks first."""
+    points = [(40.0, 23.0 + i * 0.002) for i in range(12)]
+
+    assert geo.heading_at(points, 0, window_m=500.0) == pytest.approx(90.0, abs=5.0)
+    assert geo.heading_at(points, 11, window_m=500.0) == pytest.approx(90.0, abs=5.0)
+    assert geo.heading_at([(40.0, 23.0)], 0) is None

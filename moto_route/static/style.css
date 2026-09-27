@@ -168,6 +168,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .list li.clickable { cursor: pointer; }
 .list li.clickable:hover { background: #2a303a; }
 
+/* The wind line under a weather row. `inline-block` is required on the arrow:
+   a transform does nothing to an inline box. */
+.wind { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.wind-arrow { display: inline-block; margin-right: 5px; font-size: 14px;
+              line-height: 1; color: var(--text); }
+
 .score { font-weight: 700; font-variant-numeric: tabular-nums; }
 .score.good { color: var(--good); }
 .score.mid  { color: var(--warn); }

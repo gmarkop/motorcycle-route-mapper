@@ -128,6 +128,34 @@ export function setAscentStat(payload) {
     : 'From the heights recorded in the route file.');
 }
 
+/**
+ * The wind, drawn against the way you are pointing.
+ *
+ * The arrow flies with the wind -- it points where the wind pushes you, the
+ * way a weather map draws it -- and the route's direction of travel is up. So
+ * a wind from your right shows an arrow leaning left, which is the direction
+ * it will move the bike. The words name the side it comes from, because that
+ * is how riders say it, and the tooltip states both so the pairing cannot be
+ * misread.
+ *
+ * Absent below the notable threshold: the backend leaves the fields unset, so
+ * a calm row gets nothing rather than a line of noise.
+ */
+function windArrow(point) {
+  if (!point.wind_relative || point.push_deg == null) return '';
+  const across = point.crosswind_kmh != null && point.wind_relative.startsWith('crosswind')
+    ? ` — ${point.crosswind_kmh.toFixed(0)} km/h across`
+    : '';
+  const title = `Wind from ${Math.round(point.wind_from_deg)}°, `
+    + `you are heading ${Math.round(point.heading_deg)}°. `
+    + 'The arrow shows which way it pushes you; your direction of travel is up.';
+  // One glyph rotated, rather than picking from eight arrow characters: the
+  // angle is exact, and every rotation renders in the same typeface.
+  return `<span class="wind" title="${esc(title)}">`
+    + `<span class="wind-arrow" style="transform: rotate(${point.push_deg}deg)">↑</span>`
+    + `${esc(point.wind_relative)}${across}</span>`;
+}
+
 export function setCurvinessStat(value, label) {
   $('stat-curvy').textContent = `${Math.round(value)}°/km`;
   $('stat-curvy').title = label || '';
@@ -164,6 +192,7 @@ export function showWeather(payload) {
         ${esc(point.description)}
         ${point.temperature_c != null ? `· ${point.temperature_c.toFixed(0)} °C` : ''}
         ${point.gust_kmh != null ? `· gusts ${point.gust_kmh.toFixed(0)} km/h` : ''}
+        ${windArrow(point)}
         ${point.warnings.map((w) => `<span class="warn-text">${esc(w)}</span>`).join('')}
       </span>
       <span class="score ${scoreClass(point.rideability)}">${point.rideability}</span>
