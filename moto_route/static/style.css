@@ -386,8 +386,15 @@ body.print-map #map { flex: 0 0 359px; width: 703px; height: 359px; }
   /* Chrome, controls and anything that is not the ride. */
   #splitter, #drop-zone, #plan, #saved-panel, #offline-panel, #cache-banner,
   #error, .chips, #curviness-legend, #map-overlay, header,
-  .leaflet-control-container, #print-dialog, .clickable .badge,
+  .leaflet-control-container, #print-dialog,
   #alternate-panel, #incident-panel { display: none !important; }
+
+  /* "planned stop" marks the stations the fuel planner actually chose, which
+     is the most load-bearing thing on a paper route sheet -- it was being
+     hidden along with the screen chrome. The pill's own border is a dark
+     slate picked for a dark panel; on white it needs restating, like the
+     other marks here. */
+  .clickable .badge { border-color: #111; color: #111; font-weight: 600; }
 
   #print-header {
     display: block; margin: 0 0 6mm; padding: 0 0 3mm;

@@ -326,3 +326,26 @@ def test_the_off_route_marker_is_inside_the_printed_poi_row():
     listing = listing[:listing.index("Nothing mapped")]
 
     assert "offRoute(poi)" in listing
+
+
+def test_the_planned_stop_badge_survives_onto_paper():
+    """It was swept up with the screen chrome, and it is not chrome.
+
+    "planned stop" marks the stations the fuel planner actually chose out of
+    the dozens listed. On a printed sheet that is the difference between a
+    plan and a directory, and it was the one thing the sheet did not carry.
+
+    It also needs restating for white paper: the pill's border is a dark slate
+    chosen against a dark panel, and `#sidebar *` rewrites colour but not
+    border-colour, so unhiding it alone would print a faint outline.
+    """
+    css = (JS.parent / "style.css").read_text()
+    print_block = css[css.index("@media print"):]
+
+    # In a selector list it carries a comma; its own rule is followed by "{".
+    assert ".clickable .badge," not in print_block, (
+        "the planned-stop badge must not be listed among the hidden chrome"
+    )
+    assert ".clickable .badge { border-color: #111" in print_block, (
+        "the badge needs its border restated for white paper"
+    )
