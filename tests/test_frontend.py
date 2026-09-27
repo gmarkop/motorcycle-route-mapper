@@ -276,3 +276,53 @@ def test_the_descent_line_cannot_accumulate_across_routes():
         "textContent must be written before the descent span is appended, "
         "or every route adds another line"
     )
+
+
+def test_both_on_route_and_off_route_stops_are_labelled():
+    """An absent label would mean two different things.
+
+    If only detours were marked, a blank row would read as "roadside" — and
+    equally as "this build did not measure it", or "the field was missing from
+    a cached payload". The route sheet is read at a petrol pump in the rain;
+    it should not require knowing which version produced it.
+    """
+    source = (JS / "panels.js").read_text()
+    body = source[source.index("function offRoute(poi)"):]
+    body = body[:body.index("\n}\n")]
+
+    assert ">on route<" in body, "roadside stops must say so"
+    assert "off route</span>" in body, "stops away from the route must say how far"
+
+
+def test_the_off_route_distance_is_not_called_a_detour():
+    """It is the straight line to the route, not the ride to the door.
+
+    `RouteIndex.project` measures perpendicular distance. With no turning
+    nearby the actual detour can be several times longer, so presenting this
+    as a detour would be confidently wrong about the one thing a rider would
+    use it for. The tooltip has to say which it is.
+    """
+    source = (JS / "panels.js").read_text()
+    body = source[source.index("function offRoute(poi)"):]
+    body = body[:body.index("\n}\n")]
+    assert "Straight-line distance from the route" in body, (
+        "the tooltip must say the number is a straight line"
+    )
+    assert "not the riding detour" in body, (
+        "the tooltip must say what the number is not"
+    )
+    # The words the rider actually sees, as opposed to the CSS class name.
+    assert "detour</span>" not in body, "the visible label must not promise a ride distance"
+
+
+def test_the_off_route_marker_is_inside_the_printed_poi_row():
+    """The PDF prints this list, so the marker has to be in the row itself.
+
+    Put anywhere else -- a tooltip, the map popup, a hover -- it is exactly the
+    information that does not survive onto paper, which is where it is wanted.
+    """
+    source = (JS / "panels.js").read_text()
+    listing = source[source.index("$('poi-list').innerHTML"):]
+    listing = listing[:listing.index("Nothing mapped")]
+
+    assert "offRoute(poi)" in listing
