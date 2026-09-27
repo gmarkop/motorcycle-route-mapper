@@ -420,3 +420,51 @@ async def test_the_app_says_which_categories_are_only_a_sample(settings, cache):
 
     assert result["thinned"] == {"accommodation": 100}, result["thinned"]
     assert "fuel" not in result["thinned"], "one fuel station is not a sample"
+
+
+# --------------------------------------------- how far off the route a stop sits
+
+def _straight_route() -> list[tuple[float, float]]:
+    """A line running due east along 40N, roughly 8.5 km of it."""
+    return [(40.0, 23.0 + i * 0.01) for i in range(11)]
+
+
+def test_a_stop_carries_how_far_off_the_route_it_is():
+    """The frontend prints this on the route sheet, so it has to be in the payload.
+
+    It is the perpendicular distance to the route line -- the straight line, not
+    the ride. A node placed 300 m off can be a two-kilometre loop if there is
+    nowhere to turn, which is why nothing labels this a detour.
+    """
+    route_points = _straight_route()
+    roadside = {"type": "node", "id": 1, "lat": 40.0, "lon": 23.05,
+                "tags": {"amenity": "fuel", "name": "Roadside"}}
+    # 0.005 degrees of latitude is about 555 m north of the line.
+    up_a_lane = {"type": "node", "id": 2, "lat": 40.005, "lon": 23.05,
+                 "tags": {"amenity": "fuel", "name": "Up a lane"}}
+
+    found = pois._elements_to_pois([roadside, up_a_lane], route_points, Settings())
+    by_name = {p.name: p for p in found}
+
+    assert by_name["Roadside"].distance_off_route_m == pytest.approx(0.0, abs=5.0)
+    assert by_name["Up a lane"].distance_off_route_m == pytest.approx(555.0, rel=0.05)
+
+    # And it survives serialisation, rounded — the panel reads the dict.
+    assert by_name["Up a lane"].to_dict()["distance_off_route_m"] == pytest.approx(555, abs=2)
+
+
+def test_off_route_distance_is_measured_across_the_route_not_along_it():
+    """The two distances are independent and easy to transpose.
+
+    A stop far along the route but sitting on it must read as on the route.
+    Swapping the pair would make every distant stop look like a huge detour
+    while the numbers stayed plausible.
+    """
+    route_points = _straight_route()
+    far_along = {"type": "node", "id": 3, "lat": 40.0, "lon": 23.09,
+                 "tags": {"amenity": "fuel", "name": "Far but on it"}}
+
+    poi = pois._elements_to_pois([far_along], route_points, Settings())[0]
+
+    assert poi.distance_along_route_m > 7000, "it is near the far end of the route"
+    assert poi.distance_off_route_m == pytest.approx(0.0, abs=5.0)

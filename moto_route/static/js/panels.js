@@ -207,6 +207,44 @@ export function showWeather(payload) {
 const POI_ICON = { fuel: '⛽', cafe: '☕', viewpoint: '📷',
                    accommodation: '🛏', motorcycle_parking: '🅿' };
 
+/**
+ * Under this, a stop is roadside. OSM puts a fuel node on the forecourt and a
+ * cafe node on the building, both of which sit back from the centreline the
+ * route is drawn along, so a station you ride straight into still measures a
+ * few tens of metres "off". Calling those a detour would cry wolf on every
+ * pump on the route.
+ */
+const ON_ROUTE_M = 50;
+
+/**
+ * How far a stop sits off the route.
+ *
+ * This is the straight-line distance to the route, which is what
+ * `RouteIndex.project` measures -- NOT the riding detour. With no junction
+ * nearby, 300 m off the line can be a two-kilometre loop, so the wording says
+ * "off route" rather than "detour" and the tooltip says so outright. A number
+ * presented as a detour would be confidently wrong about the only thing a
+ * rider would use it for.
+ *
+ * Both states are labelled. Leaving on-route stops blank would make an absent
+ * label mean two things -- roadside, or a version that did not measure it.
+ */
+function offRoute(poi) {
+  const metres = poi.distance_off_route_m;
+  if (metres == null) return '';
+  if (metres <= ON_ROUTE_M) {
+    return '<span class="detour">on route</span>';
+  }
+  // Round to 10 m: the route line is simplified and the OSM node is a point
+  // on a forecourt, so the last digit would be invented.
+  const shown = metres >= 1000
+    ? `${(metres / 1000).toFixed(1)} km`
+    : `${Math.round(metres / 10) * 10} m`;
+  const title = 'Straight-line distance from the route, not the riding detour '
+    + '— with no turning off nearby, the ride to it can be considerably longer.';
+  return `<span class="detour away" title="${esc(title)}">↳ ${shown} off route</span>`;
+}
+
 export function showPois(payload, visibleCategories) {
   $('fuel-panel').hidden = false;
   const planBox = $('fuel-plan');
@@ -250,6 +288,7 @@ export function showPois(payload, visibleCategories) {
         <span class="what">
           ${POI_ICON[poi.category] || ''} ${esc(poi.name)}
           ${poi.recommended ? '<span class="badge">planned stop</span>' : ''}
+          ${offRoute(poi)}
           ${poi.detail ? `<span class="warn-text">${esc(poi.detail)}</span>` : ''}
         </span>
       </li>`).join('')
