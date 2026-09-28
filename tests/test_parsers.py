@@ -43,12 +43,45 @@ def test_garmin_route_expands_shaping_geometry(read_fixture):
 
 
 def test_garmin_route_distinguishes_via_from_shaping_points(read_fixture):
+    """This used to count Passo dello Stelvio twice.
+
+    The fixture is real Garmin shape: the summit appears as a standalone <wpt>
+    carrying its description, and again as the <rtept> that routes through it,
+    at identical coordinates. Both are correct GPX and both describe one pass,
+    so the parser now keeps one -- the <wpt>, because that is the copy with the
+    description on it.
+    """
     route = parse_route_bytes(read_fixture("garmin_route.gpx"), "garmin_route.gpx")
     kinds = [w.kind for w in route.waypoints]
 
-    assert kinds.count("via") == 2         # the two named trp:ViaPoint entries
+    assert kinds.count("waypoint") == 1    # the standalone <wpt>: the summit
+    assert kinds.count("via") == 1         # Prad; Stelvio is the <wpt> above
     assert kinds.count("shaping") == 1     # the trp:ShapingPoint
-    assert kinds.count("waypoint") == 1    # the standalone <wpt>
+
+    names = [w.name for w in route.waypoints]
+    assert names.count("Passo dello Stelvio") == 1, names
+
+
+def test_a_stop_written_as_both_a_waypoint_and_a_route_point_is_one_stop(read_fixture):
+    """Two pins on one hotel, and two identical rows to tick on import.
+
+    Planners write a stop twice on purpose: the <wpt> makes it show as a place,
+    the <rtept> makes the route go through it. Kept as two, it reached the
+    exported GPX twice, and a phone showed the same hotel, address and phone
+    number as two separate entries.
+
+    The route line is built from the <rtept> whatever happens to the waypoint
+    record, so dropping the duplicate cannot move the road -- asserted here,
+    because that is the part that would be expensive to get wrong.
+    """
+    route = parse_route_bytes(read_fixture("garmin_route.gpx"), "garmin_route.gpx")
+    before = sum(len(line) for line in route.lines)
+
+    summits = [w for w in route.waypoints if w.name == "Passo dello Stelvio"]
+
+    assert len(summits) == 1
+    assert summits[0].description == "Summit cafe, cash only", "kept the richer copy"
+    assert before > 0, "the drawn line still has its points"
 
 
 def test_standalone_waypoint_keeps_its_description_and_symbol(read_fixture):
