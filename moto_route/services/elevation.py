@@ -319,6 +319,11 @@ def demanding_stretches(
         runs.append({
             "from_m": round(run[0]["distance_m"]),
             "to_m": round(run[-1]["distance_m"]),
+            # Where the stretch starts, so it can be put on a map or written
+            # into a GPX as a waypoint. The samples carry it; only the summary
+            # was throwing it away.
+            "from_lat": run[0].get("lat"),
+            "from_lon": run[0].get("lon"),
             "length_m": round(length),
             "curviness": round(peak_curve, 1),
             "gradient_pct": peak_slope,

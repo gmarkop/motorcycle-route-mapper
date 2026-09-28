@@ -49,6 +49,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 #: session; an unbounded dict would be a slow memory leak.
 MAX_ROUTES_IN_MEMORY = 20
 
+#: Sliding window the curviness heat map averages over. Shared by the endpoint
+#: and the GPX export so the stretches written onto the device are the same
+#: ones the panel showed -- two defaults would drift apart silently, and the
+#: rider would have no way to tell which was which.
+CURVINESS_WINDOW_M = 600.0
+
 
 class RouteStore:
     """A tiny bounded LRU of parsed routes."""
@@ -196,7 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/routes/{route_id}/curviness")
     async def route_curviness(
         route_id: str,
-        window_m: float = Query(600, ge=100, le=5000,
+        window_m: float = Query(CURVINESS_WINDOW_M, ge=100, le=5000,
                                 description="Sliding window used to average heading change"),
     ) -> dict[str, Any]:
         """Curviness sampled along the route, for the heat map.
@@ -275,8 +281,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tank_range_km=tank_range_km or None,
         )
 
+        # The demanding stretches need both curvature and gradient, so this is
+        # the one layer the export has to derive rather than fetch. Both halves
+        # answer from cache once the sidebar has loaded them.
+        points = route.all_latlon
+        demanding: list[dict[str, Any]] = []
+        profile = geo.curviness_profile(points, window_m=CURVINESS_WINDOW_M)
+        if profile:
+            heights = await elevation_service.profile(
+                points, [p.ele for p in route.iter_points()], settings,
+                app.state.http, app.state.elevation_cache)
+            if heights.get("available"):
+                slopes = elevation_service.gradient_at(
+                    heights.get("samples", []),
+                    [distance for _, distance, _ in profile])
+                samples = [
+                    {"lat": points[index][0], "lon": points[index][1],
+                     "distance_m": distance, "curviness": value, "gradient_pct": slope}
+                    for (index, distance, value), slope in zip(profile, slopes)
+                ]
+                demanding = elevation_service.demanding_stretches(samples, settings)
+
         payload = export.build_gpx(
-            route, weather_data, hazard_data, poi_data,
+            route, weather_data, hazard_data, poi_data, demanding,
             include_shaping_points=include_shaping,
         )
         filename = export.suggested_filename(route)

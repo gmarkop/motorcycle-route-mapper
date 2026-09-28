@@ -33,9 +33,25 @@ SYMBOLS = {
     "fuel": "Gas Station",
     "cafe": "Restaurant",
     "viewpoint": "Scenic Area",
+    "accommodation": "Lodging",
+    "motorcycle_parking": "Parking Area",
     "hazard": "Danger Area",
+    "demanding": "Summit",
     "weather": "Flag, Red",
     "waypoint": "Flag, Blue",
+}
+
+#: What each category is called on the device. GPX has no colour for a
+#: waypoint -- it is not in the 1.1 schema and Garmin's waypoint extension
+#: does not add one -- so the symbol carries the category and the name carries
+#: the meaning. On a handlebar-mounted screen that reads better than colour
+#: anyway, and it degrades to a plain dot rather than nothing on a device that
+#: does not know the symbol.
+LABELS = {
+    "fuel": "Fuel",
+    "viewpoint": "Viewpoint",
+    "accommodation": "Hotel",
+    "motorcycle_parking": "Parking",
 }
 
 
@@ -44,6 +60,7 @@ def build_gpx(
     weather: dict[str, Any] | None = None,
     hazards: dict[str, Any] | None = None,
     pois: dict[str, Any] | None = None,
+    demanding: list[dict[str, Any]] | None = None,
     *,
     include_shaping_points: bool = False,
 ) -> bytes:
@@ -64,7 +81,8 @@ def build_gpx(
     _text(metadata, "desc", _summary_line(route, weather, hazards, pois))
     _text(metadata, "time", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
-    for waypoint in _collect_waypoints(route, weather, hazards, pois, include_shaping_points):
+    for waypoint in _collect_waypoints(route, weather, hazards, pois, demanding,
+                                       include_shaping_points):
         _write_waypoint(root, waypoint)
 
     for index, line in enumerate(route.lines):
@@ -92,6 +110,7 @@ def _collect_waypoints(
     weather: dict[str, Any] | None,
     hazards: dict[str, Any] | None,
     pois: dict[str, Any] | None,
+    demanding: list[dict[str, Any]] | None,
     include_shaping_points: bool,
 ) -> list[dict[str, Any]]:
     """Gather everything worth marking, in route order."""
@@ -140,23 +159,69 @@ def _collect_waypoints(
             "along": hazard.get("distance_along_route_m") or 0.0,
         })
 
-    for poi in _entries(pois, "pois"):
+    # Planned refuelling stops are numbered in riding order, so "Fuel stop 2"
+    # on the device means the second one the plan depends on -- not the second
+    # pump you happen to pass.
+    stop_number = 0
+    for poi in sorted(_entries(pois, "pois"),
+                      key=lambda item: item.get("distance_along_route_m") or 0.0):
         category = poi.get("category", "waypoint")
         # Every cafe within 300 m of a 400 km ride is not a useful device
-        # waypoint. Fuel that the plan actually depends on is.
-        if category == "fuel" and not poi.get("recommended"):
-            continue
+        # waypoint, and there is nowhere to put the opening hours that would
+        # make one worth choosing.
         if category == "cafe":
             continue
-        prefix = "Fuel stop" if category == "fuel" else "Viewpoint"
+
+        if category == "fuel" and poi.get("recommended"):
+            stop_number += 1
+            label = f"Fuel stop {stop_number}"
+        else:
+            # Every other station still goes, named plainly. The failure that
+            # actually happens on the road is a planned stop being shut, and
+            # then what you want is the next pump, not a tidier screen.
+            label = LABELS.get(category, "Waypoint")
+
+        off_route = poi.get("distance_off_route_m")
+        detail = poi.get("detail", "")
+        if off_route is not None and off_route > 50:
+            # The device cannot show the panel's off-route line, and a station
+            # a kilometre up a side road is a different decision.
+            away = (f"{off_route / 1000:.1f} km" if off_route >= 1000
+                    else f"{round(off_route / 10) * 10:.0f} m")
+            detail = f"{detail} · {away} off route".strip(" ·")
+
+        # "Hotel: Hotel Meteora" reads like a mistake on a small screen, and
+        # the symbol already says which category it is.
+        poi_name = (poi.get("name") or "").strip()
+        titled = (f"{label}: {poi_name}".strip(": ")
+                  if not poi_name.lower().startswith(label.lower())
+                  else poi_name)
+
         collected.append({
             "lat": poi["lat"],
             "lon": poi["lon"],
-            "name": f"{prefix}: {poi.get('name', '')}".strip(": "),
-            "desc": poi.get("detail", ""),
+            "name": titled,
+            "desc": detail,
             "sym": SYMBOLS.get(category, SYMBOLS["waypoint"]),
             "type": category,
             "along": poi.get("distance_along_route_m") or 0.0,
+        })
+
+    for stretch in demanding or []:
+        if stretch.get("from_lat") is None or stretch.get("from_lon") is None:
+            continue
+        km = (stretch.get("length_m") or 0) / 1000.0
+        slope = stretch.get("gradient_pct") or 0.0
+        way = "down" if stretch.get("descending") else "up"
+        collected.append({
+            "lat": stretch["from_lat"],
+            "lon": stretch["from_lon"],
+            "name": f"Twisty & steep: {km:.1f} km {way}",
+            "desc": (f"{abs(slope):.0f}% gradient, "
+                     f"{stretch.get('curviness', 0):.0f}°/km. Starts here."),
+            "sym": SYMBOLS["demanding"],
+            "type": "demanding",
+            "along": stretch.get("from_m") or 0.0,
         })
 
     collected.sort(key=lambda item: item["along"])

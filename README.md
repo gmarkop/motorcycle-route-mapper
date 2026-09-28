@@ -103,9 +103,18 @@ phone in the rain.
 
 **Writes the whole lot back out as GPX.** The findings are no use stuck on the
 laptop while you ride off with the original file. The export folds the weather
-warnings, closures and planned fuel stops back in as ordinary waypoints with
-Garmin symbol names, so the device shows them as proper icons and no device
-needs to understand anything specific to this app.
+warnings, closures, fuel, viewpoints, hotels, parking and the twisty-and-steep
+stretches back in as ordinary waypoints with Garmin symbol names, so the device
+shows them as proper icons and no device needs to understand anything specific
+to this app.
+
+Planned refuelling stops are numbered in riding order — "Fuel stop 2" is the
+plan's second stop, not the second pump you pass — and every other station
+still ships, because the thing that goes wrong on the road is a planned stop
+being shut. GPX has no colour for a waypoint (it is not in the 1.1 schema, and
+Garmin's waypoint extension does not add one), so the symbol carries the
+category and the name carries the meaning: a demanding stretch arrives as
+"Twisty & steep: 3.2 km down" with the gradient in its description.
 
 Plus an elevation profile you can hover to see where you are on the map, and a
 [Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
