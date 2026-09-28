@@ -158,11 +158,20 @@ def _collect_waypoints(
         })
 
     for hazard in _entries(hazards, "hazards"):
+        # Every other category names itself; hazards did not, so a barrier
+        # arrived on the device as "No motor vehicles" -- indistinguishable
+        # from a place, when it is the reason the road is shut.
+        severity = hazard.get("severity", "info")
+        prefix = {"closed": "Closed", "restricted": "Restricted"}.get(severity, "Roadworks")
+        label = hazard.get("label") or "Closure"
         collected.append({
             "lat": hazard["lat"],
             "lon": hazard["lon"],
-            "name": hazard.get("label", "Closure"),
-            "desc": " ".join(filter(None, [hazard.get("detail", ""), hazard.get("osm_url", "")])),
+            "name": label if label.lower().startswith(prefix.lower()) else f"{prefix}: {label}",
+            # The OSM link belongs in the panel, where it can be clicked. On a
+            # phone in a tank bag it is a line of unreadable digits pushing the
+            # part that matters off the screen.
+            "desc": hazard.get("detail", ""),
             "sym": SYMBOLS["hazard"],
             "type": f"hazard:{hazard.get('severity', 'info')}",
             "along": hazard.get("distance_along_route_m") or 0.0,

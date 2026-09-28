@@ -107,12 +107,68 @@ def test_weather_waypoint_carries_the_reasons_and_the_score(route, weather):
     assert "rideability 20/100" in storm.description
 
 
-def test_closures_become_waypoints(route, hazards):
-    reparsed = parse_route_bytes(export.build_gpx(route, hazards=hazards), "x.gpx")
-    gate = next(w for w in reparsed.waypoints if w.name == "Closed gate")
+def test_closures_say_they_are_closures(route, hazards):
+    """A barrier arrived on the device as "No motor vehicles".
 
+    Every other category names itself -- "Fuel:", "Hotel:", "Weather km 40:" --
+    but hazards carried the raw OSM label alone, so the reason a road is shut
+    was indistinguishable from a place you might want to visit.
+
+    The OSM link left the description with it. In the panel it is clickable and
+    worth having; on a phone in a tank bag it is a line of unreadable digits
+    pushing the part that matters off a small screen.
+    """
+    reparsed = parse_route_bytes(export.build_gpx(route, hazards=hazards), "x.gpx")
+    gate = next(w for w in reparsed.waypoints if "Closed gate" in (w.name or ""))
+
+    # This fixture's label already opens with the word, so it is left alone --
+    # "Closed: Closed gate" is how a prefix goes wrong.
+    assert gate.name == "Closed gate"
     assert gate.symbol == export.SYMBOLS["hazard"]
-    assert "openstreetmap.org" in gate.description
+    assert "seasonal: yes" in (gate.description or "")
+    assert "openstreetmap.org" not in (gate.description or "")
+
+
+def test_a_hazard_that_reads_like_a_place_is_named_as_a_closure():
+    """"No motor vehicles" is a sign, not a destination.
+
+    It was arriving on the device under that name alone, sitting in the same
+    list as hotels and viewpoints with nothing to say it was the reason the
+    road ahead is shut.
+    """
+    route = Route(name="t", source_format="gpx",
+                  lines=[[GeoPoint(lat=40.0 + i * 0.01, lon=23.0) for i in range(6)]],
+                  waypoints=[])
+    payload = {"available": True, "hazards": [
+        {"lat": 40.01, "lon": 23.0, "label": "No motor vehicles", "detail": "surface: asphalt",
+         "severity": "closed", "distance_along_route_m": 1000, "osm_url": "https://osm.org/way/1"},
+        {"lat": 40.02, "lon": 23.0, "label": "Weight limit 3.5t", "detail": "",
+         "severity": "restricted", "distance_along_route_m": 2000, "osm_url": ""},
+        {"lat": 40.03, "lon": 23.0, "label": "Resurfacing", "detail": "",
+         "severity": "info", "distance_along_route_m": 3000, "osm_url": ""},
+    ]}
+    names = [w.name for w in
+             parse_route_bytes(export.build_gpx(route, hazards=payload), "x.gpx").waypoints]
+
+    assert "Closed: No motor vehicles" in names, names
+    assert "Restricted: Weight limit 3.5t" in names, names
+    assert "Roadworks: Resurfacing" in names, names
+
+
+def test_a_hazard_label_that_already_says_closed_is_not_told_twice():
+    """"Closed: Closed for the winter" is how a prefix goes wrong."""
+    route = Route(name="t", source_format="gpx",
+                  lines=[[GeoPoint(lat=40.0 + i * 0.01, lon=23.0) for i in range(4)]],
+                  waypoints=[])
+    payload = {"available": True, "hazards": [
+        {"lat": 40.01, "lon": 23.0, "label": "Closed for the winter", "detail": "",
+         "severity": "closed", "distance_along_route_m": 1000, "osm_url": ""},
+    ]}
+    names = [w.name for w in
+             parse_route_bytes(export.build_gpx(route, hazards=payload), "x.gpx").waypoints]
+
+    assert "Closed for the winter" in names, names
+    assert "Closed: Closed for the winter" not in names, names
 
 
 def test_planned_fuel_stops_are_numbered_and_the_rest_still_ship(route, pois):

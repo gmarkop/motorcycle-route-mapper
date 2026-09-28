@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Iterable
 from xml.etree import ElementTree as ET
 
+from .. import geo
 from ..models import GeoPoint, Route, Waypoint
 from .common import (
     RouteParseError,
@@ -86,7 +87,7 @@ def parse_gpx(data: bytes) -> Route:
         name = text_of(rte, "name")
         if name:
             route_names.append(name)
-        line, via_points = _read_rte(rte)
+        line, via_points = _read_rte(rte, route.waypoints)
         if len(line) >= 2:
             route_lines.append(line)
         route.waypoints.extend(via_points)
@@ -149,8 +150,15 @@ def _waypoint_from_element(elem: ET.Element, kind: str) -> Waypoint | None:
     )
 
 
-def _read_rte(rte: ET.Element) -> tuple[list[GeoPoint], list[Waypoint]]:
-    """Expand one ``<rte>`` into a drawable line plus its via/shaping points."""
+def _read_rte(
+    rte: ET.Element,
+    already: list[Waypoint],
+) -> tuple[list[GeoPoint], list[Waypoint]]:
+    """Expand one ``<rte>`` into a drawable line plus its via/shaping points.
+
+    ``already`` is the standalone ``<wpt>`` list read before this, so a stop
+    written both ways is recognised rather than counted twice.
+    """
     line: list[GeoPoint] = []
     via_points: list[Waypoint] = []
 
@@ -182,6 +190,17 @@ def _read_rte(rte: ET.Element) -> tuple[list[GeoPoint], list[Waypoint]]:
 
         kind = _classify_route_point(rtept, unnamed_are_stops=unnamed_are_stops)
         waypoint = _waypoint_from_element(rtept, kind=kind)
+        # Planners routinely write a stop twice: once as a <wpt> so it shows as
+        # a place, and again as the <rtept> that routes through it. Both are
+        # correct GPX and both describe one hotel, so keeping both put the same
+        # pin on the map twice and the same line in the exported GPX twice --
+        # visible on a phone as two identical entries to tick.
+        #
+        # The <wpt> is kept because it is the one carrying the address and
+        # phone number; the route line is built from the rtept regardless, so
+        # dropping the duplicate record cannot move the road.
+        if waypoint is not None and _already_collected(already + via_points, waypoint):
+            waypoint = None
         if waypoint is not None:
             via_points.append(waypoint)
 
@@ -191,6 +210,26 @@ def _read_rte(rte: ET.Element) -> tuple[list[GeoPoint], list[Waypoint]]:
         line.extend(_expanded_route_points(rtept))
 
     return line, via_points
+
+
+#: Two points this close with the same name are the same place written twice,
+#: not two stops. A planner emits the pair at identical coordinates; the
+#: tolerance is for files that round the two copies differently.
+DUPLICATE_WAYPOINT_M = 25.0
+
+
+def _already_collected(existing: list, candidate) -> bool:
+    """Whether this stop is already in the list under the same name."""
+    name = (candidate.name or "").strip()
+    if not name:
+        return False
+    for other in existing:
+        if (other.name or "").strip() != name:
+            continue
+        if geo.haversine_m((other.lat, other.lon),
+                           (candidate.lat, candidate.lon)) <= DUPLICATE_WAYPOINT_M:
+            return True
+    return False
 
 
 def _expanded_route_points(rtept: ET.Element) -> list[GeoPoint]:
