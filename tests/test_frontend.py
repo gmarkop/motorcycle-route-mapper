@@ -349,3 +349,21 @@ def test_the_planned_stop_badge_survives_onto_paper():
     assert ".clickable .badge { border-color: #111" in print_block, (
         "the badge needs its border restated for white paper"
     )
+
+
+def test_the_export_buttons_pass_a_part_name_not_a_click_event():
+    """`addEventListener('click', downloadEnriched)` hands in the event.
+
+    `downloadEnriched(parts = 'all')` has a default, so the bug is silent: the
+    click event arrives as `parts`, the default never applies, and the request
+    goes out as `&parts=[object PointerEvent]`. FastAPI rejects it against the
+    pattern, so the rider gets "Export failed — is the server reachable?" for a
+    server that is perfectly reachable.
+    """
+    source = (JS / "app.js").read_text()
+    wiring = [line for line in source.splitlines()
+              if "addEventListener('click'" in line and "downloadEnriched" in line]
+
+    assert len(wiring) == 2, wiring
+    for line in wiring:
+        assert "=>" in line, f"bind through an arrow, not the bare handler: {line}"

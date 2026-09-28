@@ -63,6 +63,8 @@ def build_gpx(
     demanding: list[dict[str, Any]] | None = None,
     *,
     include_shaping_points: bool = False,
+    include_track: bool = True,
+    include_waypoints: bool = True,
 ) -> bytes:
     """Serialise the route plus whatever enrichment was supplied.
 
@@ -81,11 +83,18 @@ def build_gpx(
     _text(metadata, "desc", _summary_line(route, weather, hazards, pois))
     _text(metadata, "time", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
-    for waypoint in _collect_waypoints(route, weather, hazards, pois, demanding,
-                                       include_shaping_points):
-        _write_waypoint(root, waypoint)
+    if include_waypoints:
+        for waypoint in _collect_waypoints(route, weather, hazards, pois, demanding,
+                                           include_shaping_points):
+            _write_waypoint(root, waypoint)
 
-    for index, line in enumerate(route.lines):
+    # A file holding only the stops is how a navigation app is stopped from
+    # guessing. Given both waypoints and a track, several -- Scenic among them
+    # -- assume the waypoints are the route's via points, because that is the
+    # shape Garmin route files have, and renumber them "1, 2, 3" in place of
+    # their names. With no track in the file there is nothing to attach them
+    # to, so they arrive as what they are.
+    for index, line in enumerate(route.lines if include_track else []):
         if not line:
             continue
         track = ET.SubElement(root, "trk")
@@ -280,10 +289,10 @@ def _text(parent: ET.Element, tag: str, value: str) -> None:
         ET.SubElement(parent, tag).text = value
 
 
-def suggested_filename(route: Route) -> str:
+def suggested_filename(route: Route, suffix: str = "enriched") -> str:
     """A filesystem-safe name derived from the route, for the download header."""
     base = "".join(
         char if char.isalnum() or char in " -_" else "-"
         for char in (route.name or "route")
     ).strip() or "route"
-    return f"{base[:60].replace(' ', '_')}_enriched.gpx"
+    return f"{base[:60].replace(' ', '_')}_{suffix}.gpx"

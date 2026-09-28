@@ -50,9 +50,12 @@
         <input type="range" id="tank" min="80" max="500" step="10" value="250">
         <button type="button" id="refresh" class="primary">Refresh live data</button>
         <button type="button" id="export" class="secondary">Download enriched GPX</button>
+        <button type="button" id="export-stops" class="secondary">Download stops only</button>
         <button type="button" id="print" class="secondary">Print / save as PDF…</button>
-        <p class="muted tiny">Folds the weather warnings, closures and fuel stops
-          into a GPX your Garmin can read.</p>
+        <p class="muted tiny">Folds the weather warnings, closures, fuel, hotels and
+          twisty stretches into a GPX your device can read. If your app shows them
+          numbered as via points instead of named, import <em>stops only</em>
+          alongside your route — it carries no track for them to attach to.</p>
       </section>
 
       <section id="weather-panel" class="panel" hidden>
