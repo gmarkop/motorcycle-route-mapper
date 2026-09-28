@@ -270,7 +270,10 @@ function wirePlan() {
   tank.addEventListener('change', refreshLiveData);
   $('departure').addEventListener('change', refreshLiveData);
   $('refresh').addEventListener('click', refreshLiveData);
-  $('export').addEventListener('click', downloadEnriched);
+  // Bound through an arrow: passing the handler directly hands the click
+  // event in as `parts`, and "[object PointerEvent]" is not a valid one.
+  $('export').addEventListener('click', () => downloadEnriched('all'));
+  $('export-stops').addEventListener('click', () => downloadEnriched('stops'));
 
   // Default the departure box to the next full hour, in local time — what a
   // datetime-local input expects, and usually the right answer anyway.
@@ -464,10 +467,18 @@ function wireCurvinessToggle() {
 
 // -------------------------------------------------------------------- export
 
-async function downloadEnriched() {
+/**
+ * `parts` is 'all', or 'stops' for a file with no track in it.
+ *
+ * Given both waypoints and a track, several navigation apps -- Scenic among
+ * them -- take the waypoints for the route's via points, because that is the
+ * shape of a Garmin route file, and show them numbered instead of named. A
+ * file holding only the stops has nothing for them to attach to.
+ */
+async function downloadEnriched(parts = 'all') {
   if (!state.routeId && !state.rideKey) return;
   const { speed, tank, departure } = planParams();
-  const button = $('export');
+  const button = parts === 'stops' ? $('export-stops') : $('export');
   button.disabled = true;
 
   try {
@@ -475,7 +486,8 @@ async function downloadEnriched() {
     // every other call: a plain navigation to a forgotten route id would land
     // the rider on a raw 404 page with no way back.
     const response = await routeFetch(
-      `/export.gpx?speed_kmh=${speed}&tank_range_km=${tank}&departure=${departure}`,
+      `/export.gpx?speed_kmh=${speed}&tank_range_km=${tank}&departure=${departure}`
+      + `&parts=${parts}`,
     );
     if (!response.ok) throw new Error('Export failed — is the server reachable?');
 
@@ -483,7 +495,8 @@ async function downloadEnriched() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = filenameFrom(response) || 'route_enriched.gpx';
+    link.download = filenameFrom(response)
+      || (parts === 'stops' ? 'route_stops.gpx' : 'route_enriched.gpx');
     document.body.appendChild(link);
     link.click();
     link.remove();

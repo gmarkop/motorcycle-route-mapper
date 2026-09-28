@@ -256,6 +256,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         speed_kmh: float = Query(0, ge=0, le=200),
         tank_range_km: float = Query(0, ge=0, le=1000),
         include_shaping: bool = Query(False),
+        parts: str = Query("all", pattern="^(all|route|stops)$",
+                           description="all, route (track only) or stops (waypoints only)"),
     ) -> Response:
         """Write the route back out as GPX with the live findings folded in.
 
@@ -305,8 +307,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = export.build_gpx(
             route, weather_data, hazard_data, poi_data, demanding,
             include_shaping_points=include_shaping,
+            include_track=parts != "stops",
+            include_waypoints=parts != "route",
         )
-        filename = export.suggested_filename(route)
+        filename = export.suggested_filename(
+            route, {"all": "enriched", "route": "route", "stops": "stops"}[parts])
         return Response(
             content=payload,
             media_type="application/gpx+xml",

@@ -340,3 +340,45 @@ def test_how_far_off_the_route_a_stop_sits_reaches_the_device(route, pois):
 
     assert "1.4 km off route" in found.get("Fuel: Far", ""), found
     assert "off route" not in found.get("Fuel: Near", ""), found
+
+
+def test_a_stops_only_file_carries_no_track_at_all(route, pois):
+    """This is the whole point of it, not a size optimisation.
+
+    Given both waypoints and a track, several navigation apps -- Scenic among
+    them -- take the waypoints for the route's via points, because that is the
+    shape a Garmin route file has, and show them numbered "1, 2, 3" in place
+    of their names. A single leftover <trk> is enough to trigger that, so the
+    absence is the feature.
+    """
+    body = export.build_gpx(route, pois=pois, include_track=False)
+    root = ET.fromstring(body)
+
+    assert root.findall(f"{{{export.GPX_NAMESPACE}}}trk") == []
+    assert root.findall(f"{{{export.GPX_NAMESPACE}}}wpt") != []
+    # And the names are still the names, which is what was lost on the device.
+    names = [w.name for w in parse_route_bytes(body, "x.gpx").waypoints]
+    assert any("Aral" in name for name in names), names
+
+
+def test_a_route_only_file_carries_no_waypoints(route, pois):
+    """The other half of the pair: import this as the route, stops separately."""
+    root = ET.fromstring(export.build_gpx(route, pois=pois, include_waypoints=False))
+
+    assert root.findall(f"{{{export.GPX_NAMESPACE}}}wpt") == []
+    assert root.findall(f"{{{export.GPX_NAMESPACE}}}trk") != []
+
+
+def test_the_default_export_is_unchanged_by_the_split(route, weather, hazards, pois):
+    """Splitting must not quietly change what the existing button produces."""
+    both = ET.fromstring(export.build_gpx(route, weather, hazards, pois))
+
+    assert both.findall(f"{{{export.GPX_NAMESPACE}}}wpt") != []
+    assert both.findall(f"{{{export.GPX_NAMESPACE}}}trk") != []
+
+
+def test_the_download_names_say_which_file_you_are_holding(route):
+    """Two GPX files for one ride, in a phone's downloads folder, a week later."""
+    assert export.suggested_filename(route).endswith("_enriched.gpx")
+    assert export.suggested_filename(route, "stops").endswith("_stops.gpx")
+    assert export.suggested_filename(route) != export.suggested_filename(route, "stops")
