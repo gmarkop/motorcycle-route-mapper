@@ -258,6 +258,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         include_shaping: bool = Query(False),
         parts: str = Query("all", pattern="^(all|route|stops)$",
                            description="all, route (track only) or stops (waypoints only)"),
+        include: str | None = Query(
+            None,
+            description="Comma-separated categories to write; omit for the usual set. "
+                        f"One or more of: {', '.join(sorted(export.EXPORTABLE))}"),
     ) -> Response:
         """Write the route back out as GPX with the live findings folded in.
 
@@ -304,8 +308,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ]
                 demanding = elevation_service.demanding_stretches(samples, settings)
 
+        # An unknown name is dropped rather than refused: the categories will
+        # grow, and a saved link from an older build asking for one that has
+        # been renamed should still return the rest of the ride.
+        chosen = None
+        if include is not None:
+            chosen = {name.strip() for name in include.split(",") if name.strip()}
+            chosen &= export.EXPORTABLE
+
         payload = export.build_gpx(
             route, weather_data, hazard_data, poi_data, demanding,
+            include=chosen,
             include_shaping_points=include_shaping,
             include_track=parts != "stops",
             include_waypoints=parts != "route",

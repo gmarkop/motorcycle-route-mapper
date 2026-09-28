@@ -7,6 +7,7 @@ escaped fails on the way back in.
 
 from xml.etree import ElementTree as ET
 
+import re
 import pytest
 
 from moto_route import export
@@ -438,3 +439,73 @@ def test_the_download_names_say_which_file_you_are_holding(route):
     assert export.suggested_filename(route).endswith("_enriched.gpx")
     assert export.suggested_filename(route, "stops").endswith("_stops.gpx")
     assert export.suggested_filename(route) != export.suggested_filename(route, "stops")
+
+
+# ------------------------------------------------ choosing what goes on the device
+
+def _rich_pois() -> dict:
+    return {"available": True, "pois": [
+        {"lat": 48.02, "lon": 11.0, "category": "fuel", "name": "Planned", "detail": "",
+         "recommended": True, "distance_along_route_m": 2200},
+        {"lat": 48.03, "lon": 11.0, "category": "fuel", "name": "Other", "detail": "",
+         "recommended": False, "distance_along_route_m": 3300},
+        {"lat": 48.04, "lon": 11.0, "category": "cafe", "name": "Alpin", "detail": "",
+         "distance_along_route_m": 4400},
+        {"lat": 48.12, "lon": 11.0, "category": "accommodation", "name": "Post", "detail": "",
+         "distance_along_route_m": 12000},
+    ]}
+
+
+def test_the_export_writes_only_the_categories_asked_for(route):
+    """A 450 km route carries a hundred pumps; the device screen is small."""
+    names = lambda inc: [w.name for w in parse_route_bytes(  # noqa: E731
+        export.build_gpx(route, pois=_rich_pois(), include=inc), "x.gpx").waypoints]
+
+    assert names({"accommodation"}) == ["Hotel: Post"]
+    assert names({"fuel"}) == ["Fuel stop 1: Planned"]
+    assert names(set()) == [], "ticking nothing means nothing, not everything"
+
+
+def test_wanting_the_plan_is_not_wanting_every_pump(route):
+    """The whole reason fuel is split in two.
+
+    "fuel" is the handful of stops the tank range depends on. "fuel_all" is the
+    hundred others, which are insurance when a planned stop is shut and clutter
+    otherwise — a separate decision, so a separate box.
+    """
+    def names(inc):
+        return [w.name for w in parse_route_bytes(
+            export.build_gpx(route, pois=_rich_pois(), include=inc), "x.gpx").waypoints]
+
+    assert names({"fuel"}) == ["Fuel stop 1: Planned"]
+    assert names({"fuel", "fuel_all"}) == ["Fuel stop 1: Planned", "Fuel: Other"]
+    # Asking only for the others still gives the plan: leaving the stops the
+    # range depends on out of a fuel export would be a trap, not a filter.
+    assert "Fuel stop 1: Planned" in names({"fuel", "fuel_all"})
+
+
+def test_cafes_are_exportable_but_not_by_default(route):
+    """They were refused outright before. Now they are a box nobody ticked.
+
+    Left out by default because every cafe within 300 m of a 400 km ride is not
+    a useful device waypoint, and a GPX has nowhere to put the opening hours
+    that would make one worth choosing.
+    """
+    default = [w.name for w in parse_route_bytes(
+        export.build_gpx(route, pois=_rich_pois()), "x.gpx").waypoints]
+    asked = [w.name for w in parse_route_bytes(
+        export.build_gpx(route, pois=_rich_pois(), include={"cafe"}), "x.gpx").waypoints]
+
+    assert not any("Alpin" in name for name in default), default
+    assert asked == ["Cafe: Alpin"], asked
+    assert "cafe" in export.EXPORTABLE
+    assert "cafe" not in export.DEFAULT_INCLUDE
+
+
+def test_an_export_asking_for_nothing_in_particular_is_unchanged(route, weather, hazards, pois):
+    """`include=None` must keep meaning what it has always meant."""
+    before = export.build_gpx(route, weather, hazards, pois)
+    same = export.build_gpx(route, weather, hazards, pois, include=export.DEFAULT_INCLUDE)
+
+    strip = lambda body: re.sub(rb"<time>.*?</time>|Enriched [^<]*", b"", body)  # noqa: E731
+    assert strip(before) == strip(same)

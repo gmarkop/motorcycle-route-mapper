@@ -100,8 +100,13 @@ def test_paper_preparation_is_not_hung_off_the_dialog():
     profile drawn for a dark screen.
     """
     source = (REPO / "moto_route" / "static" / "js" / "app.js").read_text()
-    listener = source.index("addEventListener('beforeprint'")
-    guard = source.index("typeof dialog.showModal !== 'function'")
+    # Scoped to the function, because the export dialog has a capability guard
+    # of its own now and a bare `.index` finds whichever comes first in the
+    # file -- which says nothing about the order inside `wirePrintExport`.
+    body = source[source.index("function wirePrintExport()"):]
+
+    listener = body.index("addEventListener('beforeprint'")
+    guard = body.index("typeof dialog.showModal !== 'function'")
 
     assert listener < guard, \
         "beforeprint must be wired before the dialog-capability return"
@@ -367,3 +372,39 @@ def test_the_export_buttons_pass_a_part_name_not_a_click_event():
     assert len(wiring) == 2, wiring
     for line in wiring:
         assert "=>" in line, f"bind through an arrow, not the bare handler: {line}"
+
+
+def test_the_export_dialog_falls_back_rather_than_doing_nothing():
+    """A browser without <dialog> must still download something.
+
+    `showModal` is the capability the dialog needs. Without the fallback the
+    export button would open nothing and download nothing, with no error — a
+    feature that silently stops existing on older browsers.
+    """
+    source = (JS / "app.js").read_text()
+    body = source[source.index("function wireExportDialog()"):]
+    body = body[:body.index("\n}\n")]
+
+    guard = body.index("typeof dialog.showModal !== 'function'")
+    fallback = body.index("downloadEnriched('all')")
+
+    assert fallback > guard, "the fallback belongs inside the capability check"
+    assert "return;" in body[guard:fallback + 200], (
+        "the fallback path must return, not fall through into showModal wiring"
+    )
+
+
+def test_ticking_nothing_is_not_the_same_as_asking_for_the_usual_set():
+    """`include` omitted means the default; `include=` means the rider chose none.
+
+    Sending an empty string for both would make an empty selection silently
+    produce a full file — the one outcome someone who unticked everything is
+    certainly not expecting.
+    """
+    source = (JS / "app.js").read_text()
+    body = source[source.index("async function downloadEnriched"):]
+    body = body[:body.index("\n}\n")]
+
+    assert "include === null ? ''" in body, (
+        "null (not asked) and [] (asked for nothing) must send different URLs"
+    )

@@ -47,8 +47,27 @@ SYMBOLS = {
 #: the meaning. On a handlebar-mounted screen that reads better than colour
 #: anyway, and it degrades to a plain dot rather than nothing on a device that
 #: does not know the symbol.
+#: What the export can be asked for, as the query parameter spells them.
+#: "fuel" is the planned refuelling stops the tank range depends on;
+#: "fuel_all" is every other pump as well, which on a long route is a hundred
+#: more markers and is a separate decision from wanting the plan.
+EXPORTABLE = frozenset({
+    "waypoints", "fuel", "fuel_all", "cafe", "viewpoint", "accommodation",
+    "motorcycle_parking", "hazards", "demanding", "weather",
+})
+
+#: What an export with nothing asked for contains. Everything except cafes:
+#: every cafe within 300 m of a 400 km ride is not a useful device waypoint,
+#: and there is nowhere in a GPX to put the opening hours that would make one
+#: worth choosing. Selectable now, rather than refused -- but not by default,
+#: because that is a change nobody asked for.
+DEFAULT_INCLUDE = EXPORTABLE - {"cafe"}
+
 LABELS = {
     "fuel": "Fuel",
+    # Plain "Cafe": this one is read off a device, and the accented form
+    # depends on the font the device happens to ship.
+    "cafe": "Cafe",
     "viewpoint": "Viewpoint",
     "accommodation": "Hotel",
     "motorcycle_parking": "Parking",
@@ -62,6 +81,7 @@ def build_gpx(
     pois: dict[str, Any] | None = None,
     demanding: list[dict[str, Any]] | None = None,
     *,
+    include: frozenset[str] | set[str] | None = None,
     include_shaping_points: bool = False,
     include_track: bool = True,
     include_waypoints: bool = True,
@@ -85,7 +105,8 @@ def build_gpx(
 
     if include_waypoints:
         for waypoint in _collect_waypoints(route, weather, hazards, pois, demanding,
-                                           include_shaping_points):
+                                           include_shaping_points,
+                                           DEFAULT_INCLUDE if include is None else include):
             _write_waypoint(root, waypoint)
 
     # A file holding only the stops is how a navigation app is stopped from
@@ -121,11 +142,17 @@ def _collect_waypoints(
     pois: dict[str, Any] | None,
     demanding: list[dict[str, Any]] | None,
     include_shaping_points: bool,
+    include: frozenset[str] | set[str],
 ) -> list[dict[str, Any]]:
-    """Gather everything worth marking, in route order."""
+    """Gather everything worth marking, in route order.
+
+    ``include`` names the categories wanted. A device screen is small and a
+    long route carries a hundred pumps, so which of these is worth having is
+    the rider's call, not a fixed list.
+    """
     collected: list[dict[str, Any]] = []
 
-    for waypoint in route.waypoints:
+    for waypoint in route.waypoints if "waypoints" in include else []:
         # Shaping points exist to bend the line onto a road; exporting them as
         # stops would clutter the device with places you never chose to visit.
         if waypoint.kind == "shaping" and not include_shaping_points:
@@ -142,7 +169,7 @@ def _collect_waypoints(
 
     # Only forecast points that actually carry a warning are worth a marker —
     # a waypoint saying "18 °C and fine" is noise on a device screen.
-    for point in _entries(weather, "points"):
+    for point in _entries(weather, "points") if "weather" in include else []:
         warnings = point.get("warnings") or []
         if not warnings:
             continue
@@ -157,7 +184,7 @@ def _collect_waypoints(
             "along": point.get("distance_m") or 0.0,
         })
 
-    for hazard in _entries(hazards, "hazards"):
+    for hazard in _entries(hazards, "hazards") if "hazards" in include else []:
         # Every other category names itself; hazards did not, so a barrier
         # arrived on the device as "No motor vehicles" -- indistinguishable
         # from a place, when it is the reason the road is shut.
@@ -187,7 +214,10 @@ def _collect_waypoints(
         # Every cafe within 300 m of a 400 km ride is not a useful device
         # waypoint, and there is nowhere to put the opening hours that would
         # make one worth choosing.
-        if category == "cafe":
+        if category not in include:
+            continue
+        # Wanting the plan is not the same as wanting every pump on the route.
+        if category == "fuel" and not poi.get("recommended") and "fuel_all" not in include:
             continue
 
         if category == "fuel" and poi.get("recommended"):
@@ -225,7 +255,7 @@ def _collect_waypoints(
             "along": poi.get("distance_along_route_m") or 0.0,
         })
 
-    for stretch in demanding or []:
+    for stretch in (demanding or []) if "demanding" in include else []:
         if stretch.get("from_lat") is None or stretch.get("from_lon") is None:
             continue
         km = (stretch.get("length_m") or 0) / 1000.0

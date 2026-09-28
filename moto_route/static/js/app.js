@@ -272,7 +272,7 @@ function wirePlan() {
   $('refresh').addEventListener('click', refreshLiveData);
   // Bound through an arrow: passing the handler directly hands the click
   // event in as `parts`, and "[object PointerEvent]" is not a valid one.
-  $('export').addEventListener('click', () => downloadEnriched('all'));
+  wireExportDialog();
   $('export-stops').addEventListener('click', () => downloadEnriched('stops'));
 
   // Default the departure box to the next full hour, in local time — what a
@@ -475,7 +475,7 @@ function wireCurvinessToggle() {
  * shape of a Garmin route file, and show them numbered instead of named. A
  * file holding only the stops has nothing for them to attach to.
  */
-async function downloadEnriched(parts = 'all') {
+async function downloadEnriched(parts = 'all', include = null) {
   if (!state.routeId && !state.rideKey) return;
   const { speed, tank, departure } = planParams();
   const button = parts === 'stops' ? $('export-stops') : $('export');
@@ -487,7 +487,11 @@ async function downloadEnriched(parts = 'all') {
     // the rider on a raw 404 page with no way back.
     const response = await routeFetch(
       `/export.gpx?speed_kmh=${speed}&tank_range_km=${tank}&departure=${departure}`
-      + `&parts=${parts}`,
+      + `&parts=${parts}`
+      // Omitted, not sent empty: no `include` means the usual set, while
+      // `include=` means a rider who ticked nothing, and the file should then
+      // hold the route alone rather than quietly ignoring them.
+      + (include === null ? '' : `&include=${encodeURIComponent(include.join(','))}`),
     );
     if (!response.ok) throw new Error('Export failed — is the server reachable?');
 
@@ -866,6 +870,50 @@ const PRINT_SECTIONS = [
   { key: 'weather', label: 'Weather along the route' },
 ];
 
+//: The GPX export's own section list. Deliberately not shared with
+//: PRINT_SECTIONS: a sheet of paper and a device screen want different things
+//: -- paper has the map and the elevation profile, a device has neither, and
+//: a device has the route's own waypoints, which paper covers in the summary.
+const EXPORT_SECTIONS = [
+  { key: 'waypoints', label: 'Your own waypoints' },
+  { key: 'fuel', label: 'Planned fuel stops' },
+  { key: 'fuel_all', label: 'Every other fuel station' },
+  { key: 'cafe', label: 'Coffee', off: true },
+  { key: 'viewpoint', label: 'Viewpoints' },
+  { key: 'accommodation', label: 'Places to stay' },
+  { key: 'motorcycle_parking', label: 'Motorcycle parking' },
+  { key: 'hazards', label: 'Closures & roadworks' },
+  { key: 'demanding', label: 'Twisty & steep stretches' },
+  { key: 'weather', label: 'Weather warnings' },
+];
+
+function exportCount(key) {
+  const counts = (state.poiPayload && state.poiPayload.counts) || {};
+  if (key === 'fuel_all') return counts.fuel;
+  if (counts[key] !== undefined) return counts[key];
+  return printCount({ hazards: 'hazards', demanding: 'demanding' }[key] || key);
+}
+
+function buildExportOptions() {
+  $('export-options').innerHTML = EXPORT_SECTIONS.map(({ key, label, off }) => {
+    const n = exportCount(key);
+    // Same rule as the print dialog: a category switched off on screen is one
+    // you said you did not want, and the dialog should not argue. Cafes stay
+    // off because they were never exported at all.
+    const poiKey = key === 'fuel_all' ? 'fuel' : key;
+    const on = !off && (state.poiFilter.has(poiKey) || !counted(poiKey));
+    return `<label><input type="checkbox" name="part" value="${key}" ${on ? 'checked' : ''}>
+            <span>${label}</span>
+            ${n === undefined ? '' : `<span class="count">(${n})</span>`}</label>`;
+  }).join('');
+}
+
+/** Whether this key is a POI category at all, as opposed to its own layer. */
+function counted(key) {
+  return Object.prototype.hasOwnProperty.call(
+    (state.poiPayload && state.poiPayload.counts) || {}, key);
+}
+
 function printCount(key) {
   if (key.startsWith('poi:')) {
     const counts = (state.poiPayload && state.poiPayload.counts) || {};
@@ -947,6 +995,32 @@ function showPrintNote(message) {
     $('print').insertAdjacentElement('afterend', note);
   }
   note.textContent = message;
+}
+
+
+/** The export button opens the same kind of dialog the print button does. */
+function wireExportDialog() {
+  const dialog = $('export-dialog');
+  const button = $('export');
+
+  // Without <dialog> support there is nothing to tick, so the button keeps
+  // doing what it always did rather than doing nothing at all.
+  if (!dialog || typeof dialog.showModal !== 'function') {
+    button.addEventListener('click', () => downloadEnriched('all'));
+    return;
+  }
+
+  button.addEventListener('click', () => {
+    buildExportOptions();
+    dialog.showModal();
+  });
+
+  dialog.addEventListener('close', () => {
+    if (dialog.returnValue !== 'export') return;
+    const chosen = [...dialog.querySelectorAll('input[name=part]:checked')]
+      .map((input) => input.value);
+    downloadEnriched('all', chosen);
+  });
 }
 
 
