@@ -116,6 +116,13 @@ Garmin's waypoint extension does not add one), so the symbol carries the
 category and the name carries the meaning: a demanding stretch arrives as
 "Twisty & steep: 3.2 km down" with the gradient in its description.
 
+**Download enriched GPX** asks what belongs on the device first, the way the
+print dialog asks what belongs on the page. Planned fuel stops and every other
+station are separate ticks, because a 450 km route carries a hundred pumps and
+wanting the plan is not the same as wanting all of them. Cafes are selectable
+but off: a GPX has nowhere to put the opening hours that would make one worth
+choosing.
+
 Some navigation apps — Scenic among them — take the waypoints in a file that
 also holds a track to be the route's via points, because that is the shape of
 a Garmin route file, and show them numbered rather than named. **Download
@@ -325,7 +332,7 @@ Useful if you want to script it or build your own frontend.
 | `GET` | `/api/routes/{id}/incidents` | Live road-authority incidents |
 | `GET` | `/api/routes/{id}/curviness` | `?window_m=<n>` — curviness sampled along the route |
 | `GET` | `/api/routes/{id}/elevation` | Distance/elevation pairs for the profile |
-| `GET` | `/api/routes/{id}/export.gpx` | `?parts=all\|route\|stops` — the enriched ride as a downloadable GPX |
+| `GET` | `/api/routes/{id}/export.gpx` | `?parts=all\|route\|stops&include=<categories>` — the enriched ride as a downloadable GPX |
 
 Interactive documentation is generated at <http://127.0.0.1:8000/docs>.
 

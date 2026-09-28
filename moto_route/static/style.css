@@ -331,9 +331,14 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
 #print-dialog::backdrop { background: #000a; }
 #print-dialog menu { display: flex; gap: 8px; justify-content: flex-end;
                      margin: 16px 0 0; padding: 0; }
-#print-options { display: grid; gap: 6px; margin-top: 12px; }
-#print-options label { display: flex; align-items: center; gap: 8px; }
-#print-options .count { color: var(--muted); font-size: 12px; }
+/* Shared by both pick-what-you-want dialogs: the printed sheet and the GPX. */
+#print-options, #export-options { display: grid; gap: 6px; margin-top: 12px; }
+#print-options label, #export-options label {
+  display: flex; align-items: center; gap: 8px;
+}
+#print-options .count, #export-options .count {
+  color: var(--muted); font-size: 12px;
+}
 #print-header { display: none; }
 
 /* The map, briefly wearing its paper shape.
