@@ -46,6 +46,15 @@ _FREEZING_CODES = {56, 57, 66, 67, 71, 73, 75, 77, 85, 86}
 _THUNDER_CODES = {95, 96, 99}
 _FOG_CODES = {45, 48}
 
+#: How far ahead the forecast reaches. Open-Meteo's free tier serves 16 days
+#: of hourly data, and beyond that nobody has anything to sell.
+#:
+#: Named rather than inlined because three places have to agree on it: the
+#: number of days requested, whether a ride is worth requesting at all, and
+#: the date to tell the rider to come back on. Two of those used to be a bare
+#: 16 and the third did not exist.
+FORECAST_HORIZON_DAYS = 16
+
 _HOURLY_VARIABLES = (
     "temperature_2m",
     "apparent_temperature",
@@ -301,6 +310,21 @@ async def forecast_along_route(
     if settings.offline:
         return {"available": False, "reason": "Offline mode is enabled.", "points": []}
 
+    # A ride entirely past the horizon is not a failure and should not read as
+    # one: nothing is wrong, the answer simply does not exist yet, and the day
+    # it starts existing can be worked out rather than guessed at.
+    first_eta = min(eta for _, _, _, eta, _ in planned)
+    if first_eta > horizon_end():
+        ready = check_back_on(first_eta)
+        days = max((first_eta.date() - datetime.now(timezone.utc).date()).days, 0)
+        return {
+            "available": False,
+            "points": [],
+            "reason": (f"Beyond the {FORECAST_HORIZON_DAYS}-day forecast horizon. "
+                       f"Departure is {days} days away — check again from "
+                       f"{ready:%-d %B}."),
+        }
+
     cache_key = _cache_key(planned)
     cached = cache.get(cache_key)
     if cached is not None:
@@ -408,8 +432,26 @@ def _forecast_days(planned: Sequence[tuple[float, float, float, datetime]]) -> i
     last_eta = max(eta for _, _, _, eta, _ in planned)
     now = datetime.now(timezone.utc)
     span_days = math.ceil((last_eta - now).total_seconds() / 86400.0) + 1
-    # The free tier serves up to 16 days; anything beyond is guesswork anyway.
-    return max(1, min(16, span_days))
+    return max(1, min(FORECAST_HORIZON_DAYS, span_days))
+
+
+def horizon_end(now: datetime | None = None) -> datetime:
+    """The last moment the forecast reaches, from ``now``.
+
+    The window runs from today inclusive, so 16 days of data ends at the close
+    of the fifteenth day after it -- off by one in the friendly direction is
+    still a rider told to check back on a day the answer is not there yet.
+    """
+    now = now or datetime.now(timezone.utc)
+    end = now + timedelta(days=FORECAST_HORIZON_DAYS - 1)
+    return end.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def check_back_on(eta: datetime, now: datetime | None = None) -> datetime:
+    """The first day whose forecast window reaches ``eta``."""
+    now = now or datetime.now(timezone.utc)
+    days_short = (eta.date() - horizon_end(now).date()).days
+    return now + timedelta(days=max(days_short, 0))
 
 
 def _build_point(
@@ -426,7 +468,11 @@ def _build_point(
     times = hourly.get("time") or []
     index = _nearest_hour_index(times, eta)
     if index is None:
-        point.description = "No forecast for this time"
+        # Say which kind of nothing this is. "No forecast" reads the same for a
+        # ride past the horizon, a lookup that failed and a gap in the series,
+        # and only one of those is worth waiting for.
+        point.description = ("Beyond the forecast horizon"
+                             if eta > horizon_end() else "No forecast for this time")
         return point
 
     def value(name: str) -> Any:

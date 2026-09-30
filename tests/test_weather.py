@@ -6,7 +6,8 @@ matters more than usual here, because the thing under test is a *judgement* —
 the rideability score — and a judgement can only be tested against fixed input.
 """
 
-from datetime import datetime, timedelta, timezone
+import asyncio
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -439,3 +440,74 @@ def test_wind_is_not_described_when_the_direction_is_unknown():
     assert weather.wind_against_route(None, 0.0, 60.0) == {}
     assert weather.wind_against_route(90.0, None, 60.0) == {}
     assert weather.wind_against_route(90.0, 0.0, None) == {}
+
+
+# ------------------------------------------------- past the end of the forecast
+
+def test_a_ride_beyond_the_horizon_says_so_and_names_the_day(long_route, settings, cache):
+    """"No forecast" reads the same as a failure, and this is not one.
+
+    A departure three weeks out has no forecast because none exists yet, not
+    because anything went wrong — and the day it starts existing is arithmetic,
+    so it can be stated rather than left for the rider to work out.
+    """
+    async def refuse(request):
+        raise AssertionError("nothing to ask for: the answer does not exist yet")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+    departure = datetime.now(timezone.utc) + timedelta(days=23)
+
+    result = asyncio.run(weather.forecast_along_route(
+        long_route, departure, 65, settings, client, cache))
+
+    assert result["available"] is False
+    assert "16-day forecast horizon" in result["reason"], result["reason"]
+    assert "check again from" in result["reason"], result["reason"]
+    # The distinction that matters: this must not read like a broken service.
+    assert "unreachable" not in result["reason"].lower()
+
+
+def test_the_day_to_check_back_is_the_first_one_that_reaches_the_departure():
+    """Off by one here sends a rider back to an app that still says no."""
+    now = datetime(2026, 9, 30, 12, tzinfo=timezone.utc)
+
+    # 16 days of window starting today reaches the 15th, so a ride on the 23rd
+    # needs eight more days before the window stretches to it.
+    assert weather.check_back_on(
+        datetime(2026, 10, 23, 9, tzinfo=timezone.utc), now).date() == date(2026, 10, 8)
+    # One day past the edge needs exactly one more day.
+    assert weather.check_back_on(
+        datetime(2026, 10, 16, 9, tzinfo=timezone.utc), now).date() == date(2026, 10, 1)
+    # Already inside the window: today, not a date in the past.
+    assert weather.check_back_on(
+        datetime(2026, 10, 3, 9, tzinfo=timezone.utc), now).date() == now.date()
+
+
+def test_the_horizon_reaches_the_end_of_its_last_day():
+    """A departure at 21:00 on the last day is still inside it.
+
+    Measuring to the same clock time would cut the final evening off, and an
+    evening ride is the one this app is built around.
+    """
+    now = datetime(2026, 9, 30, 8, tzinfo=timezone.utc)
+    last_day = datetime(2026, 10, 15, 21, tzinfo=timezone.utc)
+
+    assert weather.horizon_end(now) > last_day
+    assert weather.horizon_end(now).date() == date(2026, 10, 15)
+
+
+def test_a_point_past_the_horizon_is_distinguished_from_a_missing_hour(settings):
+    """A multi-day ride can run off the end of the window part way through.
+
+    The tail should say which kind of nothing it is, the same as the whole-ride
+    case does, rather than reading as a hole in the data.
+    """
+    beyond = datetime.now(timezone.utc) + timedelta(days=30)
+    near = datetime.now(timezone.utc) + timedelta(hours=2)
+    empty = {"hourly": {"time": []}}
+
+    far_point = weather._build_point(40.0, 23.0, 1000.0, beyond, empty)
+    near_point = weather._build_point(40.0, 23.0, 1000.0, near, empty)
+
+    assert far_point.description == "Beyond the forecast horizon"
+    assert near_point.description == "No forecast for this time"
