@@ -141,3 +141,52 @@ def test_vendored_license_is_still_shipped():
 
     assert vendored.exists(), "Leaflet's licence file must ship with the vendored copy"
     assert "Copyright" in vendored.read_text()
+
+
+def test_the_extract_keeps_every_tag_the_app_queries():
+    """The failure this prevents is silent, and has already happened once.
+
+    A tag the app asks for but `build-extract.sh` does not keep comes back
+    empty from the local server. That reads as "none along this route", not as
+    "not imported" -- the same confusion that made the corridor probe report a
+    coverage gap that was really a missing tag.
+    """
+    from moto_route.services.pois import CATEGORY_TAGS
+
+    script = (REPO / "deploy" / "overpass" / "build-extract.sh").read_text()
+    keep = script.split("KEEP=(")[1].split(")")[0]
+    kept: dict[str, set[str]] = {}
+    for line in keep.splitlines():
+        entry = line.strip()
+        if "/" not in entry or "=" not in entry:
+            continue
+        key, values = entry.split("/", 1)[1].split("=", 1)
+        kept.setdefault(key, set()).update(values.split(","))
+
+    for category, (key, values) in CATEGORY_TAGS.items():
+        missing = set(values) - kept.get(key, set())
+        assert not missing, (
+            f"{category} queries {key}={sorted(missing)}, which the extract "
+            f"does not keep: the local server would answer 'none'")
+
+
+def test_the_readme_does_not_badly_understate_the_test_count(request):
+    """It claimed 173 while the suite ran 391 — a number nobody re-reads.
+
+    The count is the first evidence a stranger has that the project is looked
+    after, so a stale one argues against itself. The tolerance is deliberately
+    loose: this should catch a figure that has fallen years behind, not nag
+    anyone who adds a test.
+    """
+    collected = request.session.testscollected
+    if collected < 100:
+        pytest.skip("partial run; the count only means anything for the whole suite")
+
+    claimed = re.search(r"Around (\d+) of them", (REPO / "README.md").read_text())
+    assert claimed, "the README should state roughly how many tests there are"
+
+    stated = int(claimed.group(1))
+    drift = abs(collected - stated) / collected
+    assert drift < 0.20, (
+        f"README says around {stated} tests, the suite collected {collected}"
+    )

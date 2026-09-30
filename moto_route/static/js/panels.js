@@ -40,7 +40,14 @@ export function showSummary(route) {
   $('summary').hidden = false;
   $('route-name').textContent = route.name || 'Route';
   $('stat-distance').textContent = km(route.stats.distance_m);
-  $('stat-ascent').textContent = route.stats.ascent_m ? `${route.stats.ascent_m} m` : '–';
+  // A flat route climbs 0 m, which is an answer; a route with no heights in
+  // the file is not. `stats.ascent_m ? ... : '–'` could not tell them apart
+  // because 0 is falsy. When the file carries nothing, leave the stat pending
+  // — the elevation profile asks the terrain model and fills it in.
+  setAscentStat(route.stats.has_elevation
+    ? { available: true, source: 'file',
+        ascent_m: route.stats.ascent_m, descent_m: route.stats.descent_m }
+    : null);
   $('stat-points').textContent = route.stats.point_count.toLocaleString();
   $('stat-curvy').textContent = '…';
 
@@ -70,6 +77,83 @@ export function showSummary(route) {
   }
   summary.classList.remove('warn-text');
   summary.textContent = [parts.join(' · '), source].filter(Boolean).join(' — ');
+}
+
+/** True once the file's own heights have answered, so nothing overrides them. */
+let ascentFromFile = false;
+
+/**
+ * Ascent, from the file when it has heights and from the terrain model when it
+ * does not. `null` means the profile has not answered yet; a payload with
+ * `available: false` means nobody could answer, which is not the same as zero.
+ *
+ * The file's number wins when there is one. The two are computed differently
+ * -- the file total ignores changes under 3 m to suppress barometer noise,
+ * while the profile sums whole samples -- so letting the profile arrive second
+ * and overwrite would flip the stat to a slightly different number a moment
+ * after the rider first read it.
+ */
+export function setAscentStat(payload) {
+  const cell = $('stat-ascent');
+  if (ascentFromFile && payload && payload.source !== 'file') return;
+  ascentFromFile = Boolean(payload && payload.available && payload.source === 'file');
+  if (payload === null) {
+    cell.textContent = '…';
+    cell.title = 'Waiting for the terrain model — this file carries no heights.';
+    return;
+  }
+  if (!payload.available || typeof payload.ascent_m !== 'number') {
+    cell.textContent = '–';
+    cell.title = payload.reason || 'No elevation data for this route.';
+    return;
+  }
+  const dem = payload.source !== 'file';
+  // "≈" because terrain-model heights are sampled from a 90 m grid, so the
+  // total is an estimate of the climbing, not a record of it.
+  const shown = (metres) => (dem ? `≈ ${metres} m` : `${metres} m`);
+  cell.textContent = shown(payload.ascent_m);
+
+  // Descent as a quieter second line. On a point-to-point ride the gap
+  // between the two is the net height change, which is the cheapest check
+  // there is that the figures are not nonsense.
+  if (typeof payload.descent_m === 'number') {
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = `↓ ${shown(payload.descent_m)}`;
+    cell.appendChild(sub);
+  }
+
+  cell.title = payload.note || (dem
+    ? 'Estimated from the terrain model, because the file carried no heights.'
+    : 'From the heights recorded in the route file.');
+}
+
+/**
+ * The wind, drawn against the way you are pointing.
+ *
+ * The arrow flies with the wind -- it points where the wind pushes you, the
+ * way a weather map draws it -- and the route's direction of travel is up. So
+ * a wind from your right shows an arrow leaning left, which is the direction
+ * it will move the bike. The words name the side it comes from, because that
+ * is how riders say it, and the tooltip states both so the pairing cannot be
+ * misread.
+ *
+ * Absent below the notable threshold: the backend leaves the fields unset, so
+ * a calm row gets nothing rather than a line of noise.
+ */
+function windArrow(point) {
+  if (!point.wind_relative || point.push_deg == null) return '';
+  const across = point.crosswind_kmh != null && point.wind_relative.startsWith('crosswind')
+    ? ` — ${point.crosswind_kmh.toFixed(0)} km/h across`
+    : '';
+  const title = `Wind from ${Math.round(point.wind_from_deg)}°, `
+    + `you are heading ${Math.round(point.heading_deg)}°. `
+    + 'The arrow shows which way it pushes you; your direction of travel is up.';
+  // One glyph rotated, rather than picking from eight arrow characters: the
+  // angle is exact, and every rotation renders in the same typeface.
+  return `<span class="wind" title="${esc(title)}">`
+    + `<span class="wind-arrow" style="transform: rotate(${point.push_deg}deg)">↑</span>`
+    + `${esc(point.wind_relative)}${across}</span>`;
 }
 
 export function setCurvinessStat(value, label) {
@@ -108,6 +192,7 @@ export function showWeather(payload) {
         ${esc(point.description)}
         ${point.temperature_c != null ? `· ${point.temperature_c.toFixed(0)} °C` : ''}
         ${point.gust_kmh != null ? `· gusts ${point.gust_kmh.toFixed(0)} km/h` : ''}
+        ${windArrow(point)}
         ${point.warnings.map((w) => `<span class="warn-text">${esc(w)}</span>`).join('')}
       </span>
       <span class="score ${scoreClass(point.rideability)}">${point.rideability}</span>
@@ -119,7 +204,46 @@ export function showWeather(payload) {
 
 // ------------------------------------------------------------ fuel and stops
 
-const POI_ICON = { fuel: '⛽', cafe: '☕', viewpoint: '📷' };
+const POI_ICON = { fuel: '⛽', cafe: '☕', viewpoint: '📷',
+                   accommodation: '🛏', motorcycle_parking: '🅿' };
+
+/**
+ * Under this, a stop is roadside. OSM puts a fuel node on the forecourt and a
+ * cafe node on the building, both of which sit back from the centreline the
+ * route is drawn along, so a station you ride straight into still measures a
+ * few tens of metres "off". Calling those a detour would cry wolf on every
+ * pump on the route.
+ */
+const ON_ROUTE_M = 50;
+
+/**
+ * How far a stop sits off the route.
+ *
+ * This is the straight-line distance to the route, which is what
+ * `RouteIndex.project` measures -- NOT the riding detour. With no junction
+ * nearby, 300 m off the line can be a two-kilometre loop, so the wording says
+ * "off route" rather than "detour" and the tooltip says so outright. A number
+ * presented as a detour would be confidently wrong about the only thing a
+ * rider would use it for.
+ *
+ * Both states are labelled. Leaving on-route stops blank would make an absent
+ * label mean two things -- roadside, or a version that did not measure it.
+ */
+function offRoute(poi) {
+  const metres = poi.distance_off_route_m;
+  if (metres == null) return '';
+  if (metres <= ON_ROUTE_M) {
+    return '<span class="detour">on route</span>';
+  }
+  // Round to 10 m: the route line is simplified and the OSM node is a point
+  // on a forecourt, so the last digit would be invented.
+  const shown = metres >= 1000
+    ? `${(metres / 1000).toFixed(1)} km`
+    : `${Math.round(metres / 10) * 10} m`;
+  const title = 'Straight-line distance from the route, not the riding detour '
+    + '— with no turning off nearby, the ride to it can be considerably longer.';
+  return `<span class="detour away" title="${esc(title)}">↳ ${shown} off route</span>`;
+}
 
 export function showPois(payload, visibleCategories) {
   $('fuel-panel').hidden = false;
@@ -164,17 +288,25 @@ export function showPois(payload, visibleCategories) {
         <span class="what">
           ${POI_ICON[poi.category] || ''} ${esc(poi.name)}
           ${poi.recommended ? '<span class="badge">planned stop</span>' : ''}
+          ${offRoute(poi)}
           ${poi.detail ? `<span class="warn-text">${esc(poi.detail)}</span>` : ''}
         </span>
       </li>`).join('')
     : '<li class="muted tiny">Nothing mapped in these categories along the route.</li>';
 
-  // Update the filter chips with what was actually found.
+  // Update the filter chips with what was actually found. A category the
+  // server had to thin says so on the chip -- "98 of 340" rather than a bare
+  // 98, because a sample presented as a total is a quiet lie about the route.
+  const thinned = payload.thinned || {};
   document.querySelectorAll('.chip[data-poi]').forEach((chip) => {
     const category = chip.dataset.poi;
     const count = counts[category] || 0;
-    chip.textContent = `${POI_ICON[category]} ${chip.dataset.label || category} (${count})`;
+    const shown = thinned[category] ? `${count} of ${thinned[category]}` : count;
+    chip.textContent = `${POI_ICON[category]} ${chip.dataset.label || category} (${shown})`;
     chip.classList.toggle('active', visibleCategories.has(category));
+    chip.title = thinned[category]
+      ? `${thinned[category]} found along the route; showing ${count} spread along it`
+      : '';
   });
 
   wireRows('poi-list', 14);
@@ -195,8 +327,13 @@ export function showHazards(payload) {
     return;
   }
   if (!payload.hazards.length) {
-    $('hazard-list').innerHTML =
-      '<li class="muted tiny">No mapped closures or roadworks on this route.</li>';
+    // "Nothing on your route" and "nothing anywhere near your route" are
+    // different answers, and the second is the reassuring one. Saying which
+    // keeps an empty panel from reading as a layer that did not run.
+    $('hazard-list').innerHTML = payload.nearby
+      ? `<li class="muted tiny">Nothing closed on this route. ${payload.nearby}`
+        + ` nearby, on other roads.</li>`
+      : '<li class="muted tiny">No mapped closures or roadworks on this route.</li>';
     mapview.layers.hazards.clearLayers();
     return;
   }
@@ -290,13 +427,19 @@ export function showAlternates(payload) {
 // ------------------------------------------------------------------ curviness
 
 export function showCurviness(payload) {
-  if (!payload.available || !payload.samples.length) return;
-  mapview.drawCurviness(payload.samples);
-  setCurvinessStat(payload.overall, curvinessLabel(payload.overall));
+  if (payload.available && payload.samples.length) {
+    mapview.drawCurviness(payload.samples);
+    setCurvinessStat(payload.overall, curvinessLabel(payload.overall));
 
-  const bar = document.querySelector('#curviness-legend .legend-bar');
-  if (bar) bar.style.background = curvinessGradient();
+    const bar = document.querySelector('#curviness-legend .legend-bar');
+    if (bar) bar.style.background = curvinessGradient();
+  }
 
+  // Outside the guard on purpose. This used to sit behind an early return, so
+  // a curviness layer that could not be computed took the demanding-stretches
+  // panel down with it -- silently, with no panel and no reason, which reads
+  // as a feature that was removed rather than one that could not run.
+  // `showDemanding` already knows how to say why it has nothing to show.
   showDemanding(payload);
 }
 

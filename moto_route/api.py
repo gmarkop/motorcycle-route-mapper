@@ -13,8 +13,11 @@ avoid a database.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import uuid
+from functools import lru_cache
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -45,6 +48,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 #: How many uploaded routes to keep. Riders open a handful of files in a
 #: session; an unbounded dict would be a slow memory leak.
 MAX_ROUTES_IN_MEMORY = 20
+
+#: Sliding window the curviness heat map averages over. Shared by the endpoint
+#: and the GPX export so the stretches written onto the device are the same
+#: ones the panel showed -- two defaults would drift apart silently, and the
+#: rider would have no way to tell which was which.
+CURVINESS_WINDOW_M = 600.0
 
 
 class RouteStore:
@@ -193,7 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/routes/{route_id}/curviness")
     async def route_curviness(
         route_id: str,
-        window_m: float = Query(600, ge=100, le=5000,
+        window_m: float = Query(CURVINESS_WINDOW_M, ge=100, le=5000,
                                 description="Sliding window used to average heading change"),
     ) -> dict[str, Any]:
         """Curviness sampled along the route, for the heat map.
@@ -247,6 +256,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         speed_kmh: float = Query(0, ge=0, le=200),
         tank_range_km: float = Query(0, ge=0, le=1000),
         include_shaping: bool = Query(False),
+        parts: str = Query("all", pattern="^(all|route|stops)$",
+                           description="all, route (track only) or stops (waypoints only)"),
+        include: str | None = Query(
+            None,
+            description="Comma-separated categories to write; omit for the usual set. "
+                        f"One or more of: {', '.join(sorted(export.EXPORTABLE))}"),
     ) -> Response:
         """Write the route back out as GPX with the live findings folded in.
 
@@ -272,11 +287,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tank_range_km=tank_range_km or None,
         )
 
+        # The demanding stretches need both curvature and gradient, so this is
+        # the one layer the export has to derive rather than fetch. Both halves
+        # answer from cache once the sidebar has loaded them.
+        points = route.all_latlon
+        demanding: list[dict[str, Any]] = []
+        profile = geo.curviness_profile(points, window_m=CURVINESS_WINDOW_M)
+        if profile:
+            heights = await elevation_service.profile(
+                points, [p.ele for p in route.iter_points()], settings,
+                app.state.http, app.state.elevation_cache)
+            if heights.get("available"):
+                slopes = elevation_service.gradient_at(
+                    heights.get("samples", []),
+                    [distance for _, distance, _ in profile])
+                samples = [
+                    {"lat": points[index][0], "lon": points[index][1],
+                     "distance_m": distance, "curviness": value, "gradient_pct": slope}
+                    for (index, distance, value), slope in zip(profile, slopes)
+                ]
+                demanding = elevation_service.demanding_stretches(samples, settings)
+
+        # An unknown name is dropped rather than refused: the categories will
+        # grow, and a saved link from an older build asking for one that has
+        # been renamed should still return the rest of the ride.
+        chosen = None
+        if include is not None:
+            chosen = {name.strip() for name in include.split(",") if name.strip()}
+            chosen &= export.EXPORTABLE
+
         payload = export.build_gpx(
-            route, weather_data, hazard_data, poi_data,
+            route, weather_data, hazard_data, poi_data, demanding,
+            include=chosen,
             include_shaping_points=include_shaping,
+            include_track=parts != "stops",
+            include_waypoints=parts != "route",
         )
-        filename = export.suggested_filename(route)
+        filename = export.suggested_filename(
+            route, {"all": "enriched", "route": "route", "stops": "stops"}[parts])
         return Response(
             content=payload,
             media_type="application/gpx+xml",
@@ -309,7 +357,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(STATIC_DIR / "index.html")
 
         @app.get("/sw.js")
-        async def service_worker() -> FileResponse:
+        async def service_worker() -> Response:
             """Serve the service worker from the site root.
 
             Scope is derived from the worker's own path: one served from
@@ -317,8 +365,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             page or its tile requests. Serving the same file from / is the
             standard fix, and avoids having to set Service-Worker-Allowed.
             """
-            return FileResponse(
-                STATIC_DIR / "sw.js",
+            return Response(
+                content=_service_worker_source(),
                 media_type="application/javascript",
                 headers={"Cache-Control": "no-cache"},
             )
@@ -349,3 +397,26 @@ def _parse_departure(raw: str | None) -> datetime:
 
 
 app = create_app()
+
+
+@lru_cache(maxsize=1)
+def _service_worker_source() -> str:
+    """`sw.js` with its cache version replaced by a digest of what it caches.
+
+    The version was a literal 'v1' that never changed, so a deploy reused the
+    same shell cache. Since the shell is served stale-while-revalidate, the
+    first load after a deploy rendered the old assets and fetched the new ones
+    for next time -- two reloads to see a change, with nothing to say so.
+
+    Digesting the assets rather than stamping a build number means the cache
+    name changes exactly when what it holds changes, and not on a restart that
+    altered nothing. Computed once: the files cannot change under a running
+    process without a reinstall, and a reinstall restarts it.
+    """
+    source = (STATIC_DIR / "sw.js").read_text()
+    digest = hashlib.sha256()
+    for name in re.findall(r"'(/static/[^']+)'", source) + ["/static/index.html"]:
+        asset = STATIC_DIR / name.removeprefix("/static/")
+        if asset.is_file():
+            digest.update(asset.read_bytes())
+    return source.replace("__SHELL_VERSION__", digest.hexdigest()[:12])

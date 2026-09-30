@@ -288,3 +288,47 @@ def test_the_service_worker_and_modules_are_served(client):
         response = client.get(path)
         assert response.status_code == 200, path
         assert response.content, path
+
+
+def test_the_service_worker_version_follows_the_assets(tmp_path, monkeypatch):
+    """A deploy must produce a new shell cache, or it stays invisible.
+
+    The version was a literal 'v1' for the life of the project. The shell is
+    served stale-while-revalidate, so reusing the cache name meant the first
+    load after a deploy rendered the old CSS and fetched the new one for next
+    time -- every change needed two reloads, and nothing said so.
+    """
+    from moto_route import api
+
+    api._service_worker_source.cache_clear()
+    before = api._service_worker_source()
+
+    style = api.STATIC_DIR / "style.css"
+    original = style.read_bytes()
+    try:
+        style.write_bytes(original + b"\n/* a deploy */\n")
+        api._service_worker_source.cache_clear()
+        after = api._service_worker_source()
+    finally:
+        style.write_bytes(original)
+        api._service_worker_source.cache_clear()
+
+    assert before != after, "changing a shell asset must change the version"
+    assert "__SHELL_VERSION__" not in before
+
+
+def test_the_tile_cache_survives_a_deploy():
+    """The offline map is the rider's, not the deploy's.
+
+    `activate` deletes every moto- cache that is not the current one, so a
+    versioned tile cache name would throw away tiles downloaded for a route
+    with no signal, every time the app is updated.
+    """
+    import re
+    from moto_route import api
+
+    source = api._service_worker_source()
+    tile_cache = re.search(r"const TILE_CACHE = '([^']+)'", source).group(1)
+
+    assert "${VERSION}" not in tile_cache
+    assert tile_cache == "moto-tiles-v1", "renaming it discards existing tiles"

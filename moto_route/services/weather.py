@@ -46,6 +46,15 @@ _FREEZING_CODES = {56, 57, 66, 67, 71, 73, 75, 77, 85, 86}
 _THUNDER_CODES = {95, 96, 99}
 _FOG_CODES = {45, 48}
 
+#: How far ahead the forecast reaches. Open-Meteo's free tier serves 16 days
+#: of hourly data, and beyond that nobody has anything to sell.
+#:
+#: Named rather than inlined because three places have to agree on it: the
+#: number of days requested, whether a ride is worth requesting at all, and
+#: the date to tell the rider to come back on. Two of those used to be a bare
+#: 16 and the third did not exist.
+FORECAST_HORIZON_DAYS = 16
+
 _HOURLY_VARIABLES = (
     "temperature_2m",
     "apparent_temperature",
@@ -54,6 +63,7 @@ _HOURLY_VARIABLES = (
     "weather_code",
     "wind_speed_10m",
     "wind_gusts_10m",
+    "wind_direction_10m",
     "visibility",
 )
 
@@ -73,6 +83,21 @@ class WeatherPoint:
     precipitation_probability: int | None = None
     wind_kmh: float | None = None
     gust_kmh: float | None = None
+    #: Where the wind blows FROM, in degrees (the meteorological convention:
+    #: 270 means a westerly, blowing towards the east).
+    wind_from_deg: float | None = None
+    #: Direction of travel here, so the frontend can draw the wind against it.
+    heading_deg: float | None = None
+    #: The component that pushes the bike sideways, which is the one that
+    #: matters. A 60 km/h gust 20 degrees off the nose is 21 km/h across.
+    crosswind_kmh: float | None = None
+    #: Positive on the nose, negative from behind.
+    headwind_kmh: float | None = None
+    #: Which way the wind pushes, relative to travel: 0 = straight ahead,
+    #: 90 = pushed to the right, 180 = from behind.
+    push_deg: float | None = None
+    #: "crosswind from the left", "headwind", "tailwind", or "" when unknown.
+    wind_relative: str = ""
     visibility_m: float | None = None
     weather_code: int | None = None
     description: str = ""
@@ -84,8 +109,66 @@ class WeatherPoint:
         return asdict(self)
 
 
+#: Below this, a gust is not worth describing -- it matches the point where
+#: `rideability` starts taking marks off, so the panel and the score agree.
+WIND_NOTABLE_KMH = 35.0
+
+
+def wind_against_route(
+    wind_from_deg: float | None,
+    heading_deg: float | None,
+    speed_kmh: float | None,
+) -> dict[str, Any]:
+    """Split a wind into the part that pushes sideways and the part that does not.
+
+    ``wind_from_deg`` follows the meteorological convention -- the direction
+    the wind comes FROM -- which is the single easiest thing to get backwards
+    here. A 270 degree wind is a westerly: it comes from the west and travels
+    east.
+
+    With ``delta`` as the bearing of the wind's source relative to the way you
+    are pointing, sin(delta) is the sideways share and cos(delta) the share on
+    the nose. So a beam wind (delta 90) is entirely crosswind, and a headwind
+    (delta 0) is none at all, whatever the forecast says about its strength.
+    """
+    if wind_from_deg is None or heading_deg is None or speed_kmh is None:
+        return {}
+
+    delta = (wind_from_deg - heading_deg + 360.0) % 360.0
+    radians = math.radians(delta)
+    crosswind = abs(math.sin(radians)) * speed_kmh
+    headwind = math.cos(radians) * speed_kmh
+
+    # Which way it shoves you: the wind travels towards its bearing plus 180.
+    push = (delta + 180.0) % 360.0
+
+    # Name it crosswind from 30 degrees off the nose, where half the gust is
+    # arriving sideways. Two earlier versions of this line were wrong at their
+    # own boundary: comparing the components puts the split at 45 degrees (and
+    # calls a wind delivering 71% of its force sideways a "headwind"), while
+    # `sin(delta) >= 0.5` misses 30 exactly, because sin(radians(30)) lands on
+    # 0.49999999999999994. Comparing the angle has no such edge.
+    off_nose = min(delta, 360.0 - delta)
+    if 30.0 <= off_nose <= 150.0:
+        side = "right" if 0.0 < delta < 180.0 else "left"
+        label = f"crosswind from the {side}"
+    elif headwind > 0:
+        label = "headwind"
+    else:
+        label = "tailwind"
+
+    return {
+        "crosswind_kmh": round(crosswind, 1),
+        "headwind_kmh": round(headwind, 1),
+        "push_deg": round(push, 1),
+        "wind_relative": label,
+    }
+
+
 def rideability(
     *,
+    crosswind_kmh: float | None = None,
+    wind_relative: str = "",
     temperature_c: float | None,
     precipitation_mm: float | None,
     precipitation_probability: int | None,
@@ -141,13 +224,29 @@ def rideability(
         if precipitation_probability >= 70 and not any("ain" in w for w in warnings):
             warnings.append(f"{precipitation_probability}% chance of rain")
 
-    # Gusts, not average wind, are what move a bike across its lane.
+    # Gusts, not average wind, are what move a bike across its lane. The score
+    # stays on the gust whatever direction it comes from -- a gust is turbulent
+    # by definition, and a 60 km/h headwind is still tiring and still eats your
+    # control margin. What direction changes is what we can honestly call it.
     if gust_kmh is not None and gust_kmh > 35:
         score -= min(30.0, (gust_kmh - 35) * 1.2)
         if gust_kmh >= 55:
-            warnings.append(f"Strong gusts ({gust_kmh:.0f} km/h) — crosswind risk")
+            if wind_relative.startswith("crosswind") and crosswind_kmh is not None:
+                warnings.append(f"Strong gusts ({gust_kmh:.0f} km/h) — "
+                                f"{wind_relative}, {crosswind_kmh:.0f} km/h across")
+            elif wind_relative:
+                # Naming it here is the point: this used to say "crosswind
+                # risk" for a wind straight down the road, which is the one
+                # case where it is not a crosswind at all.
+                warnings.append(f"Strong gusts ({gust_kmh:.0f} km/h) — mostly {wind_relative}")
+            else:
+                warnings.append(f"Strong gusts ({gust_kmh:.0f} km/h)")
         elif gust_kmh >= 45:
-            warnings.append(f"Gusty ({gust_kmh:.0f} km/h)")
+            if wind_relative.startswith("crosswind") and crosswind_kmh is not None:
+                warnings.append(f"Gusty ({gust_kmh:.0f} km/h) — "
+                                f"{wind_relative}, {crosswind_kmh:.0f} km/h across")
+            else:
+                warnings.append(f"Gusty ({gust_kmh:.0f} km/h)")
 
     if temperature_c is not None:
         if 3.0 < temperature_c < 10.0:
@@ -168,7 +267,9 @@ def plan_samples(
 ) -> list[tuple[float, float, float, datetime]]:
     """Pick where to ask for weather, and work out when you will be there.
 
-    Returns ``(lat, lon, distance_m, eta)`` tuples. The ETA model is
+    Returns ``(lat, lon, distance_m, eta, heading_deg)`` tuples, where the
+    heading is the direction of travel there -- needed to say whether a wind
+    arrives across the bike or on its nose. The ETA model is
     intentionally simple — constant average speed — because the honest
     alternative needs live traffic, and the hour-resolution forecast cannot tell
     the difference anyway.
@@ -189,7 +290,8 @@ def plan_samples(
         hours = (distance_m / 1000.0) / speed
         eta = departure + timedelta(hours=hours)
         lat, lon = points[index]
-        planned.append((lat, lon, distance_m, eta))
+        planned.append((lat, lon, distance_m, eta,
+                        geo.heading_at(points, index, settings.wind_heading_window_m)))
     return planned
 
 
@@ -207,6 +309,21 @@ async def forecast_along_route(
         return {"available": False, "reason": "Route has no points.", "points": []}
     if settings.offline:
         return {"available": False, "reason": "Offline mode is enabled.", "points": []}
+
+    # A ride entirely past the horizon is not a failure and should not read as
+    # one: nothing is wrong, the answer simply does not exist yet, and the day
+    # it starts existing can be worked out rather than guessed at.
+    first_eta = min(eta for _, _, _, eta, _ in planned)
+    if first_eta > horizon_end():
+        ready = check_back_on(first_eta)
+        days = max((first_eta.date() - datetime.now(timezone.utc).date()).days, 0)
+        return {
+            "available": False,
+            "points": [],
+            "reason": (f"Beyond the {FORECAST_HORIZON_DAYS}-day forecast horizon. "
+                       f"Departure is {days} days away — check again from "
+                       f"{ready:%-d %B}."),
+        }
 
     cache_key = _cache_key(planned)
     cached = cache.get(cache_key)
@@ -228,8 +345,8 @@ async def forecast_along_route(
         }
 
     points = [
-        _build_point(lat, lon, distance_m, eta, series)
-        for (lat, lon, distance_m, eta), series in zip(planned, raw)
+        _build_point(lat, lon, distance_m, eta, series, heading)
+        for (lat, lon, distance_m, eta, heading), series in zip(planned, raw)
     ]
     result = {"available": True, "stale": False, "points": [p.to_dict() for p in points],
               "summary": summarise(points)}
@@ -290,8 +407,8 @@ async def _fetch(
     for start in range(0, len(planned), chunk_size):
         chunk = planned[start : start + chunk_size]
         params = {
-            "latitude": ",".join(f"{lat:.4f}" for lat, _, _, _ in chunk),
-            "longitude": ",".join(f"{lon:.4f}" for _, lon, _, _ in chunk),
+            "latitude": ",".join(f"{lat:.4f}" for lat, _, _, _, _ in chunk),
+            "longitude": ",".join(f"{lon:.4f}" for _, lon, _, _, _ in chunk),
             "hourly": ",".join(_HOURLY_VARIABLES),
             "timezone": "UTC",
             "forecast_days": str(forecast_days),
@@ -312,11 +429,29 @@ async def _fetch(
 
 def _forecast_days(planned: Sequence[tuple[float, float, float, datetime]]) -> int:
     """How many days of hourly data we need to cover the last arrival."""
-    last_eta = max(eta for _, _, _, eta in planned)
+    last_eta = max(eta for _, _, _, eta, _ in planned)
     now = datetime.now(timezone.utc)
     span_days = math.ceil((last_eta - now).total_seconds() / 86400.0) + 1
-    # The free tier serves up to 16 days; anything beyond is guesswork anyway.
-    return max(1, min(16, span_days))
+    return max(1, min(FORECAST_HORIZON_DAYS, span_days))
+
+
+def horizon_end(now: datetime | None = None) -> datetime:
+    """The last moment the forecast reaches, from ``now``.
+
+    The window runs from today inclusive, so 16 days of data ends at the close
+    of the fifteenth day after it -- off by one in the friendly direction is
+    still a rider told to check back on a day the answer is not there yet.
+    """
+    now = now or datetime.now(timezone.utc)
+    end = now + timedelta(days=FORECAST_HORIZON_DAYS - 1)
+    return end.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def check_back_on(eta: datetime, now: datetime | None = None) -> datetime:
+    """The first day whose forecast window reaches ``eta``."""
+    now = now or datetime.now(timezone.utc)
+    days_short = (eta.date() - horizon_end(now).date()).days
+    return now + timedelta(days=max(days_short, 0))
 
 
 def _build_point(
@@ -325,6 +460,7 @@ def _build_point(
     distance_m: float,
     eta: datetime,
     series: dict[str, Any],
+    heading_deg: float | None = None,
 ) -> WeatherPoint:
     point = WeatherPoint(lat=lat, lon=lon, distance_m=distance_m, eta=eta.isoformat())
 
@@ -332,7 +468,11 @@ def _build_point(
     times = hourly.get("time") or []
     index = _nearest_hour_index(times, eta)
     if index is None:
-        point.description = "No forecast for this time"
+        # Say which kind of nothing this is. "No forecast" reads the same for a
+        # ride past the horizon, a lookup that failed and a gap in the series,
+        # and only one of those is worth waiting for.
+        point.description = ("Beyond the forecast horizon"
+                             if eta > horizon_end() else "No forecast for this time")
         return point
 
     def value(name: str) -> Any:
@@ -345,6 +485,8 @@ def _build_point(
     point.precipitation_mm = value("precipitation")
     probability = value("precipitation_probability")
     point.precipitation_probability = int(probability) if probability is not None else None
+    point.heading_deg = round(heading_deg, 1) if heading_deg is not None else None
+    point.wind_from_deg = value("wind_direction_10m")
     point.wind_kmh = value("wind_speed_10m")
     point.gust_kmh = value("wind_gusts_10m")
     point.visibility_m = value("visibility")
@@ -358,7 +500,16 @@ def _build_point(
         else "No forecast"
     )
 
+    # Only worth describing once the wind is doing something. Below this the
+    # direction is noise and an extra line on every calm row.
+    if point.gust_kmh is not None and point.gust_kmh >= WIND_NOTABLE_KMH:
+        for key, val in wind_against_route(
+                point.wind_from_deg, point.heading_deg, point.gust_kmh).items():
+            setattr(point, key, val)
+
     point.rideability, point.warnings = rideability(
+        crosswind_kmh=point.crosswind_kmh,
+        wind_relative=point.wind_relative,
         temperature_c=point.temperature_c,
         precipitation_mm=point.precipitation_mm,
         precipitation_probability=point.precipitation_probability,
@@ -402,6 +553,6 @@ def _cache_key(planned: Sequence[tuple[float, float, float, datetime]]) -> str:
     """
     parts = [
         f"{lat:.2f},{lon:.2f}@{eta.astimezone(timezone.utc).strftime('%Y-%m-%dT%H')}"
-        for lat, lon, _, eta in planned
+        for lat, lon, _, eta, _ in planned
     ]
     return "weather|" + "|".join(parts)

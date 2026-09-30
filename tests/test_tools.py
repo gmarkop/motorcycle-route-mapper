@@ -6,14 +6,26 @@ several merges and surfaced as a TypeError on the owner's server, mid-setup.
 These run each tool far enough to catch that, without any network.
 """
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = REPO / "tools"
+
+
+def _import_tag_census():
+    """Import the tool as a module, to test its logic rather than its output."""
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "tag_census", TOOLS / "tag_census.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run(*args: str) -> subprocess.CompletedProcess:
@@ -23,7 +35,8 @@ def run(*args: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.parametrize("tool", [
     "check_services.py", "check_coverage.py", "verify_autobahn.py",
-    "browser_test.py", "stub_apis.py",
+    "browser_test.py", "stub_apis.py", "tag_census.py",
+    "check_extract.py",
 ])
 def test_every_tool_at_least_imports(tool):
     """A syntax error or a bad import should not wait for a live server."""
@@ -33,7 +46,8 @@ def test_every_tool_at_least_imports(tool):
 
 
 @pytest.mark.parametrize("tool", ["check_services.py", "check_coverage.py",
-                                  "verify_autobahn.py", "browser_test.py"])
+                                  "verify_autobahn.py", "browser_test.py",
+                                  "tag_census.py", "check_extract.py"])
 def test_every_tool_parses_its_arguments(tool):
     result = run(str(TOOLS / tool), "--help")
     assert result.returncode == 0, result.stderr
@@ -74,3 +88,247 @@ def test_check_coverage_reports_a_polygon_file(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Athens" in result.stdout
+
+
+def test_tag_census_builds_its_query_without_a_network():
+    result = run(str(TOOLS / "tag_census.py"), "--dry-run")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Nothing was sent." in result.stdout
+
+
+def test_every_candidate_tag_is_actually_queried():
+    """The grouping must not lose a candidate on its way into the query.
+
+    Candidates sharing a key collapse into one regex to keep the query small,
+    and that is the step that can quietly drop one -- a candidate queried by
+    nobody counts zero, and zero is a legitimate answer here ("nobody maps
+    this"), so the bug would read as a result rather than a failure. Verified
+    by mutation: keeping only the first value per key fails this.
+    """
+    census = _import_tag_census()
+    # Take each selector apart rather than substring-matching it: "motorcycle"
+    # is a substring of "motorcycle_repair", so a dropped candidate would
+    # otherwise pass on its neighbour's name.
+    queried: dict[str, set[str] | None] = {}
+    for selector in census.selectors():
+        if '"~"^(' in selector:                     # ["key"~"^(a|b)$"]
+            key, alternation = selector.split('"~"^(')
+            queried[key.strip('["')] = set(alternation.rstrip(')$"]').split("|"))
+        else:                                       # ["key"]
+            queried[selector.strip('["]')] = None
+
+    for label, key, value in census.CANDIDATES:
+        assert key in queried, f"{label}: key {key} never queried"
+        values = queried[key]
+        assert values is None or value in values, \
+            f"{label}: {value} missing from the {key} selector"
+
+
+def test_the_census_counts_and_cross_tabs(capsys):
+    """The classification, which is the part that decides the feature."""
+    census = _import_tag_census()
+    elements = [
+        {"tags": {"amenity": "fuel", "name": "EKO"}},
+        {"tags": {"amenity": "fuel", "name": "Shell"}},
+        {"tags": {"amenity": "cafe", "name": "Plain Cafe"}},
+        {"tags": {"amenity": "cafe", "name": "Biker Stop",
+                  "motorcycle_friendly": "yes"}},
+        {"tags": {"shop": "motorcycle", "name": "Moto Shop"}},
+        {"tags": {"tourism": "hotel", "name": "Hotel", "motorcycle:theme": "yes"}},
+    ]
+
+    route = SimpleNamespace(name="Test", distance_m=100_000.0)
+    census.report(elements, route, 1000.0, partial=False)
+    out = capsys.readouterr().out
+
+    def counted(label: str) -> int:
+        line = next(l for l in out.splitlines() if l.strip().startswith(label))
+        return int(line.split()[-2])
+
+    assert counted("fuel (baseline)") == 2
+    assert counted("cafe (baseline)") == 2
+    assert counted("motorcycle shop") == 1
+    assert counted("viewpoint (baseline)") == 0
+    assert counted("motorcycle_friendly") == 1
+    # Only the two motorcycle-tagged stops reach the cross-tab, by name.
+    assert "Biker Stop" in out and "Hotel" in out
+    assert "Plain Cafe" not in out and "EKO" not in out
+
+
+def test_the_census_says_when_the_cap_truncated_it(capsys):
+    """A truncated union understates every count at once, silently."""
+    census = _import_tag_census()
+    elements = [{"tags": {"amenity": "fuel"}}] * census.CAP
+
+    census.report(elements, SimpleNamespace(name="T", distance_m=100_000.0),
+                  1000.0, partial=False)
+
+    assert "CAP REACHED" in capsys.readouterr().out
+
+
+def test_the_census_flags_features_it_could_not_classify(capsys):
+    """The query and the classifier come from one list, so this should be empty.
+
+    A feature matching no candidate means a selector is wider than the
+    candidate it was written for -- the counts would then not add up to the
+    features returned, which is the check that validated the Athens-Volos run.
+    """
+    census = _import_tag_census()
+    elements = [{"tags": {"amenity": "fuel"}},
+                {"tags": {"leisure": "pitch", "name": "Not Asked For"}}]
+
+    census.report(elements, SimpleNamespace(name="T", distance_m=100_000.0),
+                  1000.0, partial=False)
+    out = capsys.readouterr().out
+
+    assert "1 feature(s) matched no candidate" in out
+    assert "Not Asked For" in out
+
+
+def test_a_clean_census_says_nothing_about_classification(capsys):
+    census = _import_tag_census()
+
+    census.report([{"tags": {"amenity": "fuel"}}],
+                  SimpleNamespace(name="T", distance_m=100_000.0),
+                  1000.0, partial=False)
+
+    assert "matched no candidate" not in capsys.readouterr().out
+
+
+def test_the_census_is_not_given_local_timeouts_for_a_public_server(monkeypatch):
+    """The Dolomites regression.
+
+    On a box with a local extract the environment sets the coverage, and
+    `_is_own_server` then only has to see the primary endpoint equal
+    `overpass_url` -- which a one-endpoint Settings satisfies by construction.
+    The census was handed the 120 s local deadline for a public server.
+    """
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", "34.8,6.3,47.2,29.6")
+    census = _import_tag_census()
+    configured = census.Settings()
+    assert configured.overpass_coverage, "the box's environment, reproduced"
+
+    single = census.public_settings("https://overpass.kumi.systems/api/interpreter",
+                                    configured)
+    endpoints = single.overpass_endpoints
+
+    assert single.deadline_for(endpoints) == 900.0
+    assert single.concurrency_for(endpoints) == configured.overpass_concurrency
+    # A client deadline buys nothing if the header tells Overpass to stop first.
+    assert single.overpass_timeout_s >= 300
+
+
+def test_keeping_the_coverage_would_reproduce_the_bug(monkeypatch):
+    """Why public_settings clears the coverage, rather than only the fallbacks."""
+    monkeypatch.setenv("MOTO_OVERPASS_COVERAGE", "34.8,6.3,47.2,29.6")
+    census = _import_tag_census()
+
+    naive = census.Settings(overpass_url="https://overpass.kumi.systems/api/interpreter",
+                            overpass_fallback_urls=[])
+
+    assert naive.deadline_for(naive.overpass_endpoints) == naive.overpass_deadline_s
+
+
+def test_smaller_chunks_make_more_and_cheaper_queries():
+    """The lever for a region too dense to answer in one query."""
+    wide = run(str(TOOLS / "tag_census.py"), "--dry-run")
+    narrow = run(str(TOOLS / "tag_census.py"), "--dry-run", "--max-points", "20")
+
+    assert wide.returncode == 0 and narrow.returncode == 0, narrow.stderr
+
+    def chunks(out: str) -> int:
+        line = next(l for l in out.splitlines() if "chunk(s) of at most" in l)
+        return int(line.split("->")[1].split()[0])
+
+    def kilobytes(out: str) -> float:
+        line = next(l for l in out.splitlines() if "query size:" in l)
+        return float(line.split(":")[1].split()[0])
+
+    assert chunks(narrow.stdout) > chunks(wide.stdout)
+    assert kilobytes(narrow.stdout) < kilobytes(wide.stdout)
+
+
+def test_the_chunk_size_reaches_the_query_not_just_the_plan():
+    """--max-points must change what is sent, not only what is printed."""
+    census = _import_tag_census()
+    single = census.public_settings("https://overpass.kumi.systems/api/interpreter",
+                                    census.Settings(), 20)
+
+    assert single.overpass_max_points == 20
+
+
+def test_the_extract_check_covers_every_tag_the_app_queries():
+    """It must not drift from what the app actually asks its server for."""
+    sys.path.insert(0, str(TOOLS))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "check_extract", TOOLS / "check_extract.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from moto_route.services.pois import CATEGORY_TAGS
+
+    checked = {(key, value) for _, key, value in module.wanted()}
+    for key, values in CATEGORY_TAGS.values():
+        for value in values:
+            assert (key, value) in checked, f"{key}={value} is never verified"
+
+
+def test_the_extract_check_refuses_a_public_server():
+    """A public server holds every tag, so checking one proves nothing."""
+    result = run(str(TOOLS / "check_extract.py"),
+                 "--url", "https://overpass.kumi.systems/api/interpreter")
+
+    assert result.returncode == 2
+    assert "not your own server" in result.stderr
+
+
+def _import_check_extract():
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "check_extract", TOOLS / "check_extract.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("total,peak,odd", [
+    # Every tag of the import that actually failed came back under a hundred
+    # across two countries, so the floor catches them and this rule need not.
+    (17, 17_839, True),        # hotels, against viewpoints on the same key
+    (29_035, 51_931, False),   # fuel, healthy
+    (17_839, 51_931, False),   # viewpoints, healthy
+    # The false alarm that demoted this rule to a question: motels really are
+    # scarce in southern Europe, and 266 of them is not a broken import.
+    (266, 32_727, True),
+    # The closest real data comes to the cutoff: construction is 1/58 of
+    # barrier across Greece and Italy, and must not be remarked on at all.
+    (10_280, 593_512, False),
+])
+def test_a_tag_outnumbered_by_its_peers_is_remarked_on(total, peak, odd):
+    check = _import_check_extract()
+    assert check.odd_against_its_peers(total, peak) is odd
+
+
+def test_the_floor_is_what_catches_a_failed_import():
+    """The counts the owner's server actually returned, all under a hundred."""
+    check = _import_check_extract()
+    broken = {"hotel": 17, "guest_house": 23, "camp_site": 2, "parking": 2}
+
+    for tag, total in broken.items():
+        assert total < 100, f"{tag} must be caught by the floor alone"
+
+
+@pytest.mark.parametrize("here,there,rare", [
+    # motel, measured: 266/32,727 here against a public server's 0.0085.
+    # Genuinely scarce in Greece and Italy, and correctly not a failure.
+    (266 / 32_727, 0.0085, True),
+    # hotel in the broken extract: 17/17,869 against 3.41. Never extracted.
+    (17 / 17_869, 61_000 / 17_869, False),
+    # A region with half the density of the wider box is still fine.
+    (0.05, 0.10, True),
+])
+def test_rare_is_told_apart_from_never_extracted(here, there, rare):
+    check = _import_check_extract()
+    assert check.merely_rare(here, there) is rare

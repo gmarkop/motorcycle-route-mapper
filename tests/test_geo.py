@@ -237,3 +237,108 @@ def test_the_gap_threshold_is_adjustable():
     hop = [(38.0, 22.0), (38.0, 22.1)]        # ~8.8 km apart
     assert len(geo.corridor_points(hop, 150.0, max_span_m=1000.0)) == 2
     assert len(geo.corridor_points(hop, 150.0, max_span_m=20000.0)) > 20
+# ------------------------------------------------------- indexing the route
+
+def _wandering_route(n=2000):
+    import random
+    random.seed(11)
+    lat, lon = 38.0, 23.7
+    out = []
+    for _ in range(n):
+        lat += 0.00028 + random.uniform(-0.00004, 0.00004)
+        lon += random.uniform(-0.00006, 0.00006)
+        out.append((lat, lon))
+    return out
+
+
+def test_the_index_agrees_with_scanning_every_segment():
+    """The index is only worth having if it gives the same answers.
+
+    Anything within the reach must match a full scan; anything beyond it may
+    come back as infinity, because the caller is filtering by distance and
+    "further than the corridor" is all it needs.
+    """
+    import random
+    route = _wandering_route()
+    index = geo.RouteIndex(route, 1000.0)
+    cumulative = geo.cumulative_distances(route)
+    random.seed(3)
+
+    for i in range(60):
+        anchor = route[(i * 31) % len(route)]
+        probe = (anchor[0] + random.uniform(-0.004, 0.004),
+                 anchor[1] + random.uniform(-0.004, 0.004))
+        want_off, want_along = geo.project_onto_polyline(probe, route, cumulative)
+        got_off, got_along = index.project(probe)
+
+        if want_off <= 1000.0:
+            assert got_off == pytest.approx(want_off, abs=0.5)
+            assert got_along == pytest.approx(want_along, abs=1.0)
+        else:
+            assert got_off > 1000.0
+
+
+def test_a_point_far_from_the_route_is_beyond_reach():
+    route = _wandering_route(200)
+    index = geo.RouteIndex(route, 200.0)
+
+    assert index.distance_m((10.0, 10.0)) == float("inf")
+
+
+def test_the_index_handles_a_single_point_route():
+    index = geo.RouteIndex([(38.0, 23.7)], 500.0)
+    assert index.project((38.0, 23.7))[0] == pytest.approx(0.0, abs=1.0)
+
+
+def test_the_index_is_faster_than_scanning():
+    """The point of the exercise: 235 stops against an 18,000-point track was
+    four million segment tests, run synchronously inside an async handler."""
+    import time
+    route = _wandering_route(6000)
+    probes = [(route[i * 97 % len(route)][0] + 0.001,
+               route[i * 97 % len(route)][1] + 0.001) for i in range(120)]
+    cumulative = geo.cumulative_distances(route)
+
+    started = time.perf_counter()
+    for p in probes:
+        geo.project_onto_polyline(p, route, cumulative)
+    scanning = time.perf_counter() - started
+
+    index = geo.RouteIndex(route, 1000.0)
+    started = time.perf_counter()
+    for p in probes:
+        index.project(p)
+    indexed = time.perf_counter() - started
+
+    assert indexed * 5 < scanning, (
+        f"indexed {indexed:.3f}s vs scanning {scanning:.3f}s — no real gain")
+
+
+def test_heading_at_uses_a_window_rather_than_the_adjacent_point():
+    """Two track points metres apart give a bearing made of GPS jitter.
+
+    A straight line running due east, with one point knocked sideways as a
+    receiver does in a valley. The bearing across the kink is wildly wrong;
+    averaged over half a kilometre it is still east, which is where the road
+    actually goes.
+    """
+    step = 0.002  # about 170 m of longitude at this latitude
+    points = [(40.0, 23.0 + i * step) for i in range(12)]
+    points[6] = (40.0009, 23.0 + 6 * step)  # ~100 m north: a jitter spike
+
+    naive = geo.bearing_deg(points[5], points[6])
+    windowed = geo.heading_at(points, 6, window_m=500.0)
+
+    assert abs(naive - 90.0) > 20.0, "the unsmoothed bearing should be badly off"
+    assert windowed == pytest.approx(90.0, abs=5.0)
+
+
+def test_heading_at_still_answers_at_the_ends_of_the_route():
+    """The window is one-sided there, which is correct -- the road still has a
+    direction at its first point. Returning None would drop the wind reading
+    for the start and finish, which is where a rider looks first."""
+    points = [(40.0, 23.0 + i * 0.002) for i in range(12)]
+
+    assert geo.heading_at(points, 0, window_m=500.0) == pytest.approx(90.0, abs=5.0)
+    assert geo.heading_at(points, 11, window_m=500.0) == pytest.approx(90.0, abs=5.0)
+    assert geo.heading_at([(40.0, 23.0)], 0) is None

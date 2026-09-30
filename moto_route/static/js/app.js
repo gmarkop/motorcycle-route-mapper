@@ -11,7 +11,7 @@ import * as mapview from './mapview.js';
 import * as panels from './panels.js';
 import * as tiles from './tiles.js';
 import * as store from './store.js';
-import { curvinessGradient } from './format.js';
+import { curvinessGradient, esc } from './format.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,9 +20,22 @@ const state = {
   rideKey: null,          // client-side id; stable across re-uploads
   profile: null,
   inFlight: null,                                   // AbortController
-  poiFilter: new Set(['fuel', 'cafe', 'viewpoint']),
+  // All five on. Accommodation started off, on the theory that 124 hotels per
+  // 100 km of Dolomites would bury the fuel stops -- but the owner went
+  // looking for it twice and found an empty map both times, which is the
+  // stronger evidence. These are multi-day routes consulted the evening
+  // before a ride, and a bed is a thing you came to find rather than a thing
+  // you would rather not see. Density is handled where it belongs now: a
+  // crowded category is thinned across the route and the chip says so.
+  poiFilter: new Set(['fuel', 'cafe', 'viewpoint', 'motorcycle_parking',
+                      'accommodation']),
   poiPayload: null,
   curvinessOn: false,
+  // Twisty *and* steep stretches. They arrive on the curviness
+  // payload while the profile arrives on the elevation one, from
+  // different endpoints in either order, so each redraws when the
+  // other lands rather than assuming it got there first.
+  demanding: [],
   recoveryError: null,
   servedFromCache: false,
   config: {
@@ -41,7 +54,7 @@ const LAYERS = {
   weather: { panel: 'weather-panel', list: 'weather-list' },
   pois: {
     panel: 'fuel-panel', list: 'poi-list',
-    waiting: 'Searching OpenStreetMap for fuel, coffee and viewpoints along the route…',
+    waiting: 'Searching OpenStreetMap for fuel, coffee, views, parking and places to stay…',
   },
   hazards: {
     panel: 'hazard-panel', list: 'hazard-list',
@@ -257,7 +270,10 @@ function wirePlan() {
   tank.addEventListener('change', refreshLiveData);
   $('departure').addEventListener('change', refreshLiveData);
   $('refresh').addEventListener('click', refreshLiveData);
-  $('export').addEventListener('click', downloadEnriched);
+  // Bound through an arrow: passing the handler directly hands the click
+  // event in as `parts`, and "[object PointerEvent]" is not a valid one.
+  wireExportDialog();
+  $('export-stops').addEventListener('click', () => downloadEnriched('stops'));
 
   // Default the departure box to the next full hour, in local time — what a
   // datetime-local input expects, and usually the right answer anyway.
@@ -416,13 +432,24 @@ async function loadCurviness() {
     const response = await routeFetch('/curviness');
     const payload = await response.json();
     panels.showCurviness(payload);
+    rememberDemanding(payload);
     if (state.rideKey) await store.saveLayer(state.rideKey, 'curviness', payload);
   } catch {
     const cached = await cachedLayer('curviness');
-    if (cached) panels.showCurviness(cached.payload);
+    if (cached) {
+      panels.showCurviness(cached.payload);
+      rememberDemanding(cached.payload);
+    }
     /* Otherwise: the heat map is a nicety, and its absence needs no announcement. */
   }
 }
+
+/** Keep the demanding stretches, and put them on the profile if it is drawn. */
+function rememberDemanding(payload) {
+  state.demanding = (payload && payload.demanding) || [];
+  if (state.profile && state.profile.length) drawProfile(state.profile);
+}
+
 
 function wireCurvinessToggle() {
   const button = $('curviness-toggle');
@@ -440,10 +467,18 @@ function wireCurvinessToggle() {
 
 // -------------------------------------------------------------------- export
 
-async function downloadEnriched() {
+/**
+ * `parts` is 'all', or 'stops' for a file with no track in it.
+ *
+ * Given both waypoints and a track, several navigation apps -- Scenic among
+ * them -- take the waypoints for the route's via points, because that is the
+ * shape of a Garmin route file, and show them numbered instead of named. A
+ * file holding only the stops has nothing for them to attach to.
+ */
+async function downloadEnriched(parts = 'all', include = null) {
   if (!state.routeId && !state.rideKey) return;
   const { speed, tank, departure } = planParams();
-  const button = $('export');
+  const button = parts === 'stops' ? $('export-stops') : $('export');
   button.disabled = true;
 
   try {
@@ -451,7 +486,12 @@ async function downloadEnriched() {
     // every other call: a plain navigation to a forgotten route id would land
     // the rider on a raw 404 page with no way back.
     const response = await routeFetch(
-      `/export.gpx?speed_kmh=${speed}&tank_range_km=${tank}&departure=${departure}`,
+      `/export.gpx?speed_kmh=${speed}&tank_range_km=${tank}&departure=${departure}`
+      + `&parts=${parts}`
+      // Omitted, not sent empty: no `include` means the usual set, while
+      // `include=` means a rider who ticked nothing, and the file should then
+      // hold the route alone rather than quietly ignoring them.
+      + (include === null ? '' : `&include=${encodeURIComponent(include.join(','))}`),
     );
     if (!response.ok) throw new Error('Export failed — is the server reachable?');
 
@@ -459,7 +499,8 @@ async function downloadEnriched() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = filenameFrom(response) || 'route_enriched.gpx';
+    link.download = filenameFrom(response)
+      || (parts === 'stops' ? 'route_stops.gpx' : 'route_enriched.gpx');
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -520,6 +561,13 @@ function wireOffline() {
       cacheButton.disabled = true;
       return;
     }
+    if (!tiles.controlling()) {
+      // Registered but not controlling this page yet. Saying so beats leaving
+      // "Checking…" on screen indefinitely, which reads as a hang.
+      status.textContent = 'Offline caching will be ready after a reload.';
+      cacheButton.disabled = true;
+      return;
+    }
     tiles.requestStats();
   });
 
@@ -574,60 +622,605 @@ async function loadElevation() {
 
 function showProfile(payload) {
   const wrap = $('profile-wrap');
+  // The summary's Ascent is left pending until this answers, so it has to be
+  // told either way -- including on the failure path, or it waits for ever.
+  panels.setAscentStat(payload && payload.available
+    ? payload
+    : { available: false, reason: (payload && payload.reason) || undefined });
   if (!payload || !payload.available || payload.samples.length < 2) {
     wrap.hidden = true;
     return;
   }
   state.profile = payload.samples;
+  const wasHidden = wrap.hidden;
   wrap.hidden = false;
   drawProfile(payload.samples);
+
+  // Showing the profile takes 156 px off the map, and Leaflet caches its
+  // container size. Without this it spent the rest of the session believing
+  // it was 156 px taller than it is -- so `getBounds` was wrong, and a click
+  // landed at slightly the wrong place. Found by measuring what printing
+  // restored: printing had been quietly repairing it.
+  if (wasHidden) mapview.resized();
 }
 
-/* Hand-rolled SVG rather than a charting library: about thirty lines, and it
- * keeps the page dependency-free. */
-function drawProfile(samples) {
+/* Hand-rolled SVG rather than a charting library: it keeps the page
+ * dependency-free, and the shape being drawn is simple.
+ *
+ * The line is coloured by gradient, which is the whole point of having one.
+ * A route's profile drawn in a single colour tells you the shape of the hills
+ * but not where the work is -- and a 6% drag and a 6% descent look identical
+ * on it, which are not remotely the same ride.
+ *
+ * Gradient is a polarity: climbing one way, descending the other, flat in the
+ * middle. So the scale is diverging -- two hues with a neutral grey midpoint,
+ * never a rainbow -- and it deliberately avoids the amber and green the map
+ * already spends on curviness, so the two encodings are not confused.
+ * Validated for colour-vision deficiency against the panel background rather
+ * than chosen by eye.
+ */
+const GRADIENT_BANDS = [
+  { upTo: -6, colour: '#2b6cb0', label: 'steep descent' },
+  { upTo: -2, colour: '#7fcdff', label: 'descent' },
+  { upTo: 2, colour: '#8a93a3', label: 'level' },
+  { upTo: 6, colour: '#ffa06b', label: 'climb' },
+  { upTo: Infinity, colour: '#e8452f', label: 'steep climb' },
+];
+
+function gradientBand(pct) {
+  return GRADIENT_BANDS.find((b) => (pct || 0) < b.upTo) || GRADIENT_BANDS[4];
+}
+
+/** Round to something a person would put on an axis. */
+function niceStep(span) {
+  const rough = span / 3;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  return [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) || rough;
+}
+
+/* Ink for the profile's own chrome. The gradient colours are saturated and
+ * read on either surface, but the grid and the labels were picked against a
+ * dark panel and are invisible on paper. They are SVG attributes rather than
+ * CSS, so a print stylesheet cannot reach them -- the profile is redrawn
+ * instead, which is cheap and the only honest option. */
+const PROFILE_INK = {
+  screen: { grid: '#2e343f', label: '#9aa3b2', fill: '#ffffff0d', mark: '#e6e9ef' },
+  paper: { grid: '#c9ced6', label: '#444444', fill: '#00000008', mark: '#111111' },
+};
+
+function drawProfile(samples, forPaper = false) {
+  const ink = forPaper ? PROFILE_INK.paper : PROFILE_INK.screen;
   const svg = $('profile');
   const width = svg.clientWidth || 800;
-  const height = svg.clientHeight || 100;
-  const pad = 4;
+  const height = svg.clientHeight || 110;
+  const padL = 38;     // room for the metre labels
+  const padR = 8;
+  const padT = 8;
+  const padB = 16;     // room for the kilometre labels
 
   const maxDistance = samples[samples.length - 1].distance_m || 1;
   const elevations = samples.map((s) => s.ele);
   const minEle = Math.min(...elevations);
   const maxEle = Math.max(...elevations);
-  const span = Math.max(maxEle - minEle, 1);
 
-  const x = (d) => pad + (d / maxDistance) * (width - 2 * pad);
-  const y = (e) => height - pad - ((e - minEle) / span) * (height - 2 * pad);
+  // Grid lines land on round heights rather than on the data's extremes, so
+  // the eye has something regular to measure differences against -- which is
+  // what the profile is for.
+  const step = niceStep(Math.max(maxEle - minEle, 1));
+  const gridLow = Math.floor(minEle / step) * step;
+  const gridHigh = Math.ceil(maxEle / step) * step;
+  const span = Math.max(gridHigh - gridLow, 1);
 
-  const line = samples
+  const x = (d) => padL + (d / maxDistance) * (width - padL - padR);
+  const y = (e) => height - padB - ((e - gridLow) / span) * (height - padT - padB);
+
+  const parts = [];
+
+  // Twisty and steep together, shaded behind everything else. An annotation on
+  // the plot rather than another series, so it wears amber -- which the
+  // gradient ramp deliberately leaves free -- and sits under the line instead
+  // of competing with it. The panel below lists them; this says where they are.
+  const demanding = state.demanding || [];
+  demanding.forEach((stretch) => {
+    const left = x(stretch.from_m);
+    const right = Math.max(x(stretch.to_m), left + 2);
+    parts.push(
+      `<rect x="${left.toFixed(1)}" y="${padT}" width="${(right - left).toFixed(1)}" `
+      + `height="${height - padT - padB}" fill="#ffc74a16"/>`
+      + `<rect x="${left.toFixed(1)}" y="${height - padB - 2}" `
+      + `width="${(right - left).toFixed(1)}" height="2" fill="#ffc74a"/>`);
+  });
+
+  for (let e = gridLow; e <= gridHigh + 0.001; e += step) {
+    parts.push(
+      `<line x1="${padL}" y1="${y(e).toFixed(1)}" x2="${width - padR}" `
+      + `y2="${y(e).toFixed(1)}" stroke="${ink.grid}" stroke-width="1"/>`
+      + `<text x="${padL - 6}" y="${(y(e) + 3.5).toFixed(1)}" fill="${ink.label}" `
+      + `font-size="10" text-anchor="end">${Math.round(e)}</text>`);
+  }
+
+  const path = samples
     .map((s, i) => `${i ? 'L' : 'M'}${x(s.distance_m).toFixed(1)},${y(s.ele).toFixed(1)}`)
     .join('');
-  const area = `${line}L${x(maxDistance).toFixed(1)},${height - pad}L${pad},${height - pad}Z`;
+  parts.push(`<path d="${path}L${x(maxDistance).toFixed(1)},${height - padB}`
+             + `L${padL},${height - padB}Z" fill="${ink.fill}"/>`);
+
+  // Consecutive samples in the same band become one path, so a 300-sample
+  // route draws a handful of strokes instead of three hundred.
+  const runs = [];
+  samples.forEach((sample, i) => {
+    if (i === 0) return;
+    const band = gradientBand(sample.gradient_pct);
+    const last = runs[runs.length - 1];
+    if (last && last.band === band) last.points.push(sample);
+    else runs.push({ band, points: [samples[i - 1], sample] });
+  });
+  runs.forEach((run) => {
+    const d = run.points
+      .map((s, i) => `${i ? 'L' : 'M'}${x(s.distance_m).toFixed(1)},${y(s.ele).toFixed(1)}`)
+      .join('');
+    parts.push(`<path d="${d}" fill="none" stroke="${run.band.colour}" `
+               + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`);
+  });
+
+  const kmStep = niceStep(maxDistance / 1000) * 1000;
+  for (let d = 0; d <= maxDistance + 1; d += kmStep) {
+    parts.push(`<text x="${x(d).toFixed(1)}" y="${height - 4}" fill="${ink.label}" `
+               + `font-size="10" text-anchor="middle">${Math.round(d / 1000)}</text>`);
+  }
+
+  // The crosshair, hidden until pointed at.
+  parts.push('<line id="profile-cross" x1="0" y1="' + padT + '" x2="0" y2="'
+             + (height - padB) + `" stroke="${ink.mark}" stroke-width="1" `
+             + 'stroke-dasharray="2 2" opacity="0"/>'
+             + `<circle id="profile-dot" r="4.5" fill="${ink.mark}" stroke="#14171c" `
+             + 'stroke-width="2" opacity="0"/>');
 
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  svg.innerHTML =
-    `<path d="${area}" fill="#ff7a2f22"/>`
-    + `<path d="${line}" fill="none" stroke="#ff7a2f" stroke-width="1.5"/>`
-    + `<text x="${pad + 2}" y="12" fill="#9aa3b2" font-size="10">${Math.round(maxEle)} m</text>`
-    + `<text x="${pad + 2}" y="${height - 6}" fill="#9aa3b2" font-size="10">${Math.round(minEle)} m</text>`;
+  svg.innerHTML = parts.join('');
 
-  svg.onmousemove = (event) => {
+  const cross = svg.querySelector('#profile-cross');
+  const dot = svg.querySelector('#profile-dot');
+
+  const at = (clientX) => {
     const rect = svg.getBoundingClientRect();
-    const fraction = (event.clientX - rect.left) / rect.width;
-    const target = fraction * maxDistance;
+    const fraction = (clientX - rect.left) / rect.width;
+    const target = Math.max(0, Math.min(1, fraction)) * maxDistance;
     // Samples are ordered by distance, so a linear scan finds the nearest.
-    const sample = samples.reduce((best, s) => (
+    return samples.reduce((best, s) => (
       Math.abs(s.distance_m - target) < Math.abs(best.distance_m - target) ? s : best));
-    $('profile-readout').textContent =
-      `km ${(sample.distance_m / 1000).toFixed(1)} · ${Math.round(sample.ele)} m`;
+  };
+
+  // Pointer events rather than mouse events: this is read on an iPad as often
+  // as on a laptop, and `mousemove` never fires there. `touch-action: none` in
+  // the stylesheet stops a drag along the profile scrolling the page instead.
+  const track = (event) => {
+    const sample = at(event.clientX);
+    const slope = sample.gradient_pct || 0;
+    const band = gradientBand(slope);
+    cross.setAttribute('x1', x(sample.distance_m).toFixed(1));
+    cross.setAttribute('x2', x(sample.distance_m).toFixed(1));
+    cross.setAttribute('opacity', '0.5');
+    dot.setAttribute('cx', x(sample.distance_m).toFixed(1));
+    dot.setAttribute('cy', y(sample.ele).toFixed(1));
+    dot.setAttribute('fill', band.colour);
+    dot.setAttribute('opacity', '1');
+    const inside = demanding.some((d) => sample.distance_m >= d.from_m
+                                      && sample.distance_m <= d.to_m);
+    $('profile-readout').innerHTML =
+      `km ${(sample.distance_m / 1000).toFixed(1)} · <strong>${Math.round(sample.ele)} m</strong>`
+      + ` · ${slope > 0 ? '+' : ''}${slope.toFixed(1)}%`
+      + (inside ? ' · <span class="demanding-flag">twisty &amp; steep</span>' : '');
     mapview.showPositionAt(sample.distance_m);
   };
-  svg.onmouseleave = () => {
+
+  svg.onpointermove = track;
+  svg.onpointerdown = track;
+  svg.onpointerleave = (event) => {
+    // A lifted finger is not a pointer that left. On touch, `pointerleave`
+    // fires the instant the tap ends, so clearing here wiped the reading the
+    // tap had just produced -- the profile looked inert on an iPad while
+    // working perfectly under a mouse. Keeping it is also the better
+    // behaviour: you tap a spot, and it stays until you tap another.
+    if (event.pointerType === 'touch') return;
+    cross.setAttribute('opacity', '0');
+    dot.setAttribute('opacity', '0');
     $('profile-readout').textContent = '';
     mapview.hidePosition();
   };
+
+  // Written after the handlers are bound, and tolerant of being absent. The
+  // legend is chrome; the crosshair is the feature. Reversed, a page whose
+  // HTML is a version behind its JavaScript -- which a service worker can
+  // easily produce -- drew the coloured line, threw on the missing element,
+  // and left the profile inert, with the two failures looking unrelated.
+  const legend = $('profile-legend');
+  if (legend) legend.innerHTML = GRADIENT_BANDS
+    .map((b) => `<span class="swatch" style="background:${b.colour}" `
+                + `title="${b.label}"></span>`).join('')
+    + '<span class="tiny muted">&minus;6% &middot; level &middot; +6%</span>'
+    + (demanding.length
+        ? '<span class="swatch demanding-key" title="Twisty and steep"></span>'
+          + '<span class="tiny muted">twisty &amp; steep</span>'
+        : '');
 }
+
+// ------------------------------------------------------------ print / PDF
+
+/* Printing is the export. The browser already turns a page into a PDF, and a
+ * route sheet is a page: a map, some headings and some lists. What was missing
+ * was choosing what goes on it and a palette that does not spend a cartridge
+ * on a dark background.
+ *
+ * The POI categories are driven through `state.poiFilter`, so the printed
+ * lists come out of the renderer the screen already uses. A second code path
+ * that formatted POIs for paper would be a second place for them to disagree.
+ */
+const PRINT_SECTIONS = [
+  { key: 'summary', label: 'Route summary', always: true },
+  { key: 'map', label: 'Map, as framed on screen' },
+  { key: 'profile', label: 'Elevation profile' },
+  { key: 'poi:fuel', label: 'Fuel stops' },
+  { key: 'poi:cafe', label: 'Coffee' },
+  { key: 'poi:viewpoint', label: 'Viewpoints' },
+  { key: 'poi:accommodation', label: 'Places to stay' },
+  { key: 'poi:motorcycle_parking', label: 'Motorcycle parking' },
+  { key: 'hazards', label: 'Closures & roadworks' },
+  { key: 'demanding', label: 'Twisty & steep stretches' },
+  { key: 'weather', label: 'Weather along the route' },
+];
+
+//: The GPX export's own section list. Deliberately not shared with
+//: PRINT_SECTIONS: a sheet of paper and a device screen want different things
+//: -- paper has the map and the elevation profile, a device has neither, and
+//: a device has the route's own waypoints, which paper covers in the summary.
+const EXPORT_SECTIONS = [
+  { key: 'waypoints', label: 'Your own waypoints' },
+  { key: 'fuel', label: 'Planned fuel stops' },
+  { key: 'fuel_all', label: 'Every other fuel station' },
+  { key: 'cafe', label: 'Coffee', off: true },
+  { key: 'viewpoint', label: 'Viewpoints' },
+  { key: 'accommodation', label: 'Places to stay' },
+  { key: 'motorcycle_parking', label: 'Motorcycle parking' },
+  { key: 'hazards', label: 'Closures & roadworks' },
+  { key: 'demanding', label: 'Twisty & steep stretches' },
+  { key: 'weather', label: 'Weather warnings' },
+];
+
+function exportCount(key) {
+  const counts = (state.poiPayload && state.poiPayload.counts) || {};
+  if (key === 'fuel_all') return counts.fuel;
+  if (counts[key] !== undefined) return counts[key];
+  return printCount({ hazards: 'hazards', demanding: 'demanding' }[key] || key);
+}
+
+function buildExportOptions() {
+  $('export-options').innerHTML = EXPORT_SECTIONS.map(({ key, label, off }) => {
+    const n = exportCount(key);
+    // Same rule as the print dialog: a category switched off on screen is one
+    // you said you did not want, and the dialog should not argue. Cafes stay
+    // off because they were never exported at all.
+    const poiKey = key === 'fuel_all' ? 'fuel' : key;
+    const on = !off && (state.poiFilter.has(poiKey) || !counted(poiKey));
+    return `<label><input type="checkbox" name="part" value="${key}" ${on ? 'checked' : ''}>
+            <span>${label}</span>
+            ${n === undefined ? '' : `<span class="count">(${n})</span>`}</label>`;
+  }).join('');
+}
+
+/** Whether this key is a POI category at all, as opposed to its own layer. */
+function counted(key) {
+  return Object.prototype.hasOwnProperty.call(
+    (state.poiPayload && state.poiPayload.counts) || {}, key);
+}
+
+function printCount(key) {
+  if (key.startsWith('poi:')) {
+    const counts = (state.poiPayload && state.poiPayload.counts) || {};
+    return counts[key.slice(4)];
+  }
+  // Counted off the rendered list rather than from a payload held for the
+  // purpose: the panel is what got drawn, so it is what would get printed.
+  const list = { hazards: 'hazard-list', demanding: 'demanding-list' }[key];
+  if (!list) return undefined;
+  const items = document.querySelectorAll(`#${list} li:not(.muted)`).length;
+  return items || undefined;
+}
+
+function buildPrintOptions() {
+  const box = $('print-options');
+  box.innerHTML = PRINT_SECTIONS.map(({ key, label, always }) => {
+    const n = printCount(key);
+    // Default to what is on screen: a category you switched off is one you
+    // said you did not want, and the dialog should not argue.
+    const on = always || (key.startsWith('poi:')
+      ? state.poiFilter.has(key.slice(4))
+      : true);
+    return `<label><input type="checkbox" name="section" value="${key}"
+              ${on ? 'checked' : ''} ${always ? 'disabled' : ''}>
+            <span>${label}</span>
+            ${n === undefined ? '' : `<span class="count">(${n})</span>`}</label>`;
+  }).join('');
+}
+
+function fillPrintHeader() {
+  // Read back from the summary panel, which already holds the route's name and
+  // distance in the form they were rendered. Keeping a second copy in `state`
+  // just for the header would be a second thing that can be out of date.
+  // Name and date only. Distance, ascent and the rest are in the summary panel,
+  // which is always printed, and saying them twice on one sheet is noise.
+  const name = ($('route-name').textContent || 'Route').trim();
+  $('print-header').innerHTML =
+    `<h1>${esc(name)}</h1><div class="facts">Printed `
+    + `${esc(new Date().toLocaleDateString())} — closures and weather were `
+    + 'current when this page was made, not when it is read.</div>';
+}
+
+/* Reframing the map for paper.
+ *
+ * The map used to print at whatever shape it had on screen, which was a claim
+ * I made and the stylesheet did not honour: print gives it 95 mm of height,
+ * so the box changed proportions, Leaflet kept the same centre and zoom, and
+ * the sheet showed a slice of the route.
+ *
+ * So the map is put into the printed box's exact pixel shape first, then asked
+ * to fit the whole route into it. Doing it in that order matters --
+ * `fitBounds` solves for the box it is given.
+ */
+let undoPaperMap = null;
+
+function mapToPaper() {
+  if (undoPaperMap) return false;
+  const view = mapview.viewState();
+  document.body.classList.add('print-map');
+  mapview.resized();
+  const fitted = mapview.fitRoute();
+
+  undoPaperMap = () => {
+    document.body.classList.remove('print-map');
+    mapview.resized();
+    mapview.restoreView(view);
+    undoPaperMap = null;
+  };
+  return fitted;
+}
+
+/** A line under the print button, for something the sheet will be missing. */
+function showPrintNote(message) {
+  let note = $('print-note');
+  if (!note) {
+    note = document.createElement('p');
+    note.id = 'print-note';
+    note.className = 'tiny warn-text';
+    $('print').insertAdjacentElement('afterend', note);
+  }
+  note.textContent = message;
+}
+
+
+/** The export button opens the same kind of dialog the print button does. */
+function wireExportDialog() {
+  const dialog = $('export-dialog');
+  const button = $('export');
+
+  // Without <dialog> support there is nothing to tick, so the button keeps
+  // doing what it always did rather than doing nothing at all.
+  if (!dialog || typeof dialog.showModal !== 'function') {
+    button.addEventListener('click', () => downloadEnriched('all'));
+    return;
+  }
+
+  button.addEventListener('click', () => {
+    buildExportOptions();
+    dialog.showModal();
+  });
+
+  dialog.addEventListener('close', () => {
+    if (dialog.returnValue !== 'export') return;
+    const chosen = [...dialog.querySelectorAll('input[name=part]:checked')]
+      .map((input) => input.value);
+    downloadEnriched('all', chosen);
+  });
+}
+
+
+function wirePrintExport() {
+  const dialog = $('print-dialog');
+  const button = $('print');
+
+  // Whatever started the print -- the dialog, Cmd-P, or Share > Print on an
+  // iPad -- the page still needs its header filled and the profile drawn in
+  // ink that shows on paper. Hanging that off the dialog meant the browser's
+  // own print command got neither.
+  window.addEventListener('beforeprint', () => {
+    fillPrintHeader();
+    if (state.profile && state.profile.length) drawProfile(state.profile, true);
+    // Nothing can be awaited here -- the browser prints as soon as this
+    // returns -- so a print started from the browser's own command gets the
+    // right framing with whatever tiles are already cached. The route line and
+    // the markers are drawn immediately either way, which is the part that
+    // cannot be looked up later.
+    mapToPaper();
+  });
+  window.addEventListener('afterprint', () => {
+    if (state.profile && state.profile.length) drawProfile(state.profile);
+    if (undoPaperMap) undoPaperMap();
+  });
+
+  if (!dialog || !button || typeof dialog.showModal !== 'function') return;
+
+  button.addEventListener('click', () => {
+    buildPrintOptions();
+    dialog.showModal();
+  });
+
+  dialog.addEventListener('close', () => {
+    if (dialog.returnValue !== 'print') return;
+
+    const stale = $('print-note');
+    if (stale) stale.remove();
+
+    const chosen = [...dialog.querySelectorAll('input[name=section]:checked')]
+      .map((input) => input.value);
+    const categories = new Set(chosen.filter((k) => k.startsWith('poi:'))
+                                     .map((k) => k.slice(4)));
+
+    const sections = chosen.filter((k) => !k.startsWith('poi:'));
+    if (categories.size) sections.push('pois');
+    document.body.dataset.print = sections.join(' ');
+
+    // Swap the filter, redraw through the normal path, print, put it back.
+    const before = state.poiFilter;
+    state.poiFilter = categories;
+    if (state.poiPayload) panels.showPois(state.poiPayload, categories);
+    if (state.profile && state.profile.length) drawProfile(state.profile, true);
+    fillPrintHeader();
+
+    const restore = () => {
+      state.poiFilter = before;
+      if (state.poiPayload) panels.showPois(state.poiPayload, before);
+      if (state.profile && state.profile.length) drawProfile(state.profile);
+      if (undoPaperMap) undoPaperMap();
+      delete document.body.dataset.print;
+      window.removeEventListener('afterprint', restore);
+    };
+    window.addEventListener('afterprint', restore);
+
+    // Out of the close handler. Safari can still be tearing down the modal's
+    // top layer when this runs, and the snapshot it takes then is not the page.
+    //
+    // This path can do what `beforeprint` cannot: reframe the map and then
+    // wait for the tiles that reframing asked for. Without the wait the new
+    // view prints with the old view's tiles, which after a zoom change is
+    // usually none of them.
+    setTimeout(async () => {
+      if (sections.includes('map')) {
+        mapToPaper();
+        // Reframing means a new zoom, and a new zoom means every tile is a
+        // fresh fetch. Printing without waiting produced a sheet with the
+        // route drawn over nothing at all.
+        button.disabled = true;
+        const was = button.textContent;
+        button.textContent = 'Preparing the map…';
+        const tiles = await mapview.tilesSettled();
+        button.textContent = was;
+        button.disabled = false;
+        // Say what the sheet will be short of, rather than printing it and
+        // leaving the rider to work out why the map is empty. Printing anyway
+        // is right -- the lists and the profile are most of the value.
+        if (tiles.blank && tiles.blank === tiles.tiles) {
+          showPrintNote('The map will print without its background: none of '
+            + 'these tiles are cached and they could not be fetched. '
+            + 'Save tiles for offline use, or check the connection.');
+        } else if (tiles.timedOut) {
+          showPrintNote(`Printing with ${tiles.pending} of ${tiles.tiles} map `
+            + 'tiles still loading — the map may have gaps.');
+        }
+      }
+      window.print();
+    }, 0);
+    // Safari does not always fire afterprint either; a timer is the backstop
+    // rather than leaving the page filtered to whatever was printed.
+    setTimeout(() => { if (document.body.dataset.print !== undefined) restore(); }, 3000);
+  });
+}
+
+// --------------------------------------------------------------- the splitter
+
+/* Dragging the line between the map and the panels.
+ *
+ * The map is the thing you zoom into and the panels are the thing you read,
+ * and which of those wants the room changes by the minute -- tracing a pass on
+ * the map, then reading forty hotels. A fixed 58vh was always going to be
+ * wrong half the time.
+ */
+const SPLIT_KEY = 'moto-map-height';
+const MIN_MAP_PX = 120;
+const MIN_PANELS_PX = 110;
+
+function applySplit(px) {
+  const usable = document.getElementById('layout').clientHeight;
+  const clamped = Math.max(MIN_MAP_PX,
+                           Math.min(px, usable - MIN_PANELS_PX));
+  document.documentElement.style.setProperty('--map-height', `${clamped}px`);
+  $('splitter').setAttribute('aria-valuenow', String(Math.round(clamped)));
+
+  // Leaflet caches its container size, and the profile is drawn in pixels from
+  // its own. Neither notices a flexbox change on its own, and a window resize
+  // event is not fired by dragging a div.
+  mapview.resized();
+  if (state.profile && state.profile.length) drawProfile(state.profile);
+  return clamped;
+}
+
+function wireSplitter() {
+  const splitter = $('splitter');
+  const layout = document.getElementById('layout');
+  if (!splitter || !layout) return;
+
+  let saved = null;
+  try { saved = localStorage.getItem(SPLIT_KEY); } catch { /* private mode */ }
+  if (saved) applySplit(parseFloat(saved));
+
+  const remember = (px) => {
+    try { localStorage.setItem(SPLIT_KEY, String(px)); } catch { /* fine */ }
+  };
+
+  const moveTo = (clientY) => {
+    const top = layout.getBoundingClientRect().top;
+    remember(applySplit(clientY - top - splitter.offsetHeight / 2));
+  };
+
+  splitter.addEventListener('pointerdown', (event) => {
+    // Capture, so a pointer that outruns the handle keeps driving it rather
+    // than dropping the drag the moment it leaves a 9px strip.
+    splitter.setPointerCapture(event.pointerId);
+    document.body.classList.add('splitting');
+    event.preventDefault();
+  });
+  splitter.addEventListener('pointermove', (event) => {
+    if (!splitter.hasPointerCapture(event.pointerId)) return;
+    moveTo(event.clientY);
+  });
+  const release = (event) => {
+    if (splitter.hasPointerCapture(event.pointerId)) {
+      splitter.releasePointerCapture(event.pointerId);
+    }
+    document.body.classList.remove('splitting');
+  };
+  splitter.addEventListener('pointerup', release);
+  splitter.addEventListener('pointercancel', release);
+
+  // A separator you can focus but not operate is worse than one you cannot
+  // focus at all, and this is also the only way to nudge it precisely.
+  splitter.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 60 : 20;
+    const current = document.getElementById('map-area').getBoundingClientRect().height;
+    const by = { ArrowUp: -step, ArrowDown: step,
+                 PageUp: -step * 3, PageDown: step * 3 }[event.key];
+    if (by === undefined && event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault();
+    if (event.key === 'Home') remember(applySplit(MIN_MAP_PX));
+    else if (event.key === 'End') remember(applySplit(layout.clientHeight));
+    else remember(applySplit(current + by));
+  });
+
+  // A window that changed shape can leave the stored split outside its limits.
+  window.addEventListener('resize', () => {
+    const current = document.getElementById('map-area').getBoundingClientRect().height;
+    applySplit(current);
+  });
+}
+
+// Redrawn on resize: the SVG is sized in pixels from its container, so without
+// this a rotated iPad stretches the marks and the labels with them.
+let profileResize;
+window.addEventListener('resize', () => {
+  clearTimeout(profileResize);
+  profileResize = setTimeout(() => {
+    if (state.profile && state.profile.length) drawProfile(state.profile);
+  }, 150);
+});
 
 // ------------------------------------------------------- saved rides & restore
 
@@ -853,6 +1446,8 @@ async function boot() {
   wirePlan();
   wirePoiFilters();
   wireCurvinessToggle();
+  wireSplitter();
+  wirePrintExport();
   wireOffline();
   wireConnectivity();
 

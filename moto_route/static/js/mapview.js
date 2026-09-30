@@ -78,6 +78,78 @@ export function routeLatLngs() {
   return currentRoute.lines.flat().map((p) => [p.lat, p.lon]);
 }
 
+/** Tell Leaflet its container changed size. It caches the dimensions. */
+export function resized() {
+  map.invalidateSize();
+}
+
+
+/** Frame the whole route. Returns false if there is no route to frame. */
+export function fitRoute(padding = 14) {
+  const points = routeLatLngs();
+  if (points.length < 2) return false;
+  map.fitBounds(L.latLngBounds(points), { padding: [padding, padding],
+                                          animate: false });
+  return true;
+}
+
+
+/** The current centre and zoom, to put back afterwards. */
+export function viewState() {
+  return { center: map.getCenter(), zoom: map.getZoom() };
+}
+
+
+export function restoreView(view) {
+  if (view) map.setView(view.center, view.zoom, { animate: false });
+}
+
+
+/**
+ * Resolve once every tile in the map is an image that will actually print.
+ *
+ * The first version waited on the layer's `load` event with a 2.5 s cap, and a
+ * printed sheet came back with the route drawn over nothing: eight images in
+ * the PDF, all of them marker pins and shadows, and not one 256-pixel tile.
+ * Reframing changes the zoom, every tile for the new zoom is a fresh fetch,
+ * and the cap expired first.
+ *
+ * So the test is the images themselves -- `complete` with a non-zero
+ * `naturalWidth` is precisely "this will render" -- rather than an event that
+ * may have fired before anyone subscribed. Resolves with what it found, so the
+ * caller can say whether it gave up.
+ */
+export function tilesSettled(timeoutMs = 12000) {
+  const pane = map.getPane('tilePane');
+  if (!pane) return Promise.resolve({ tiles: 0, pending: 0, timedOut: false });
+
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      const tiles = [...pane.querySelectorAll('img.leaflet-tile')];
+      const pending = tiles.filter((t) => !t.complete || t.naturalWidth === 0);
+      // A tile of one pixel is the service worker's transparent placeholder,
+      // handed back when it has nothing cached and cannot reach the tile
+      // server. It is `complete` with a non-zero width, so counting it as
+      // loaded is how a sheet came back with the route drawn over nothing --
+      // the wait was satisfied by eighteen invisible pixels.
+      const blank = tiles.filter((t) => t.complete && t.naturalWidth === 1);
+      if (tiles.length && !pending.length) {
+        return resolve({ tiles: tiles.length, pending: 0, blank: blank.length,
+                         timedOut: false, waitedMs: Date.now() - started });
+      }
+      if (Date.now() - started > timeoutMs) {
+        return resolve({ tiles: tiles.length, pending: pending.length,
+                         blank: blank.length, timedOut: true,
+                         waitedMs: Date.now() - started });
+      }
+      setTimeout(check, 120);
+    };
+    check();
+  });
+}
+
+
 export function flyTo(lat, lon, zoom = 13) {
   map.flyTo([Number(lat), Number(lon)], zoom);
 }
@@ -208,6 +280,8 @@ const POI_STYLE = {
   fuel: { colour: '#4ea8ff', label: 'Fuel' },
   cafe: { colour: '#c98cff', label: 'Coffee' },
   viewpoint: { colour: '#4ec97f', label: 'Viewpoint' },
+  accommodation: { colour: '#f0a24a', label: 'Place to stay' },
+  motorcycle_parking: { colour: '#5ad4d4', label: 'Motorcycle parking' },
 };
 
 export function drawPois(pois, visibleCategories) {

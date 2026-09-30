@@ -25,19 +25,82 @@ html, body {
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-#layout { display: flex; height: 100%; }
+/* Map on top, everything read about the route underneath it.
+
+   The map is the thing being looked at and the panels are the commentary, so
+   the map gets the full width rather than two thirds of it -- a route across
+   northern Greece is wide and short, and a tall narrow map wasted most of the
+   window on sea.
+
+   Ordered in CSS rather than in the markup: the sidebar stays first in the
+   document, so it keeps the tab order and the reading order, which is the one
+   you want anyway -- the controls that load a route come before the map they
+   act on. */
+#layout { display: flex; flex-direction: column; height: 100%; }
+
+#map-area {
+  order: 1;
+  /* The split is a variable so the splitter can move it without this rule
+     having to know anything about dragging. 58vh is only where it starts. */
+  flex: 0 0 var(--map-height, 58vh);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+#map { flex: 1; background: #0e1013; }
+
+/* The handle between them. Deliberately a little taller than it looks: the
+   visible rule is 1px, the grab area is 9px, because a 1px drag target is a
+   fight on a trackpad and impossible with a finger. */
+#splitter {
+  order: 2;
+  flex: 0 0 9px;
+  cursor: row-resize;
+  background: var(--border);
+  background-clip: content-box;
+  padding: 4px 0;
+  touch-action: none;
+  position: relative;
+}
+#splitter::after {
+  content: ""; position: absolute; left: 50%; top: 2px;
+  width: 40px; height: 5px; margin-left: -20px; border-radius: 3px;
+  background: var(--border);
+}
+#splitter:hover::after, #splitter:focus-visible::after { background: var(--accent); }
+#splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* While dragging, the cursor belongs to the whole window: a pointer that
+   outruns the handle should not change shape or start selecting the page. */
+body.splitting { cursor: row-resize; user-select: none; }
 
 #sidebar {
-  width: 360px;
-  flex: 0 0 360px;
+  order: 3;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;             /* or the panels push the map off the screen */
   overflow-y: auto;
   padding: 16px;
   background: var(--panel);
-  border-right: 1px solid var(--border);
+  border-top: 1px solid var(--border);
 }
 
-#map-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-#map { flex: 1; background: #0e1013; }
+/* On a wide screen the panels sit side by side under the map, instead of
+   becoming one long ribbon of single rows. Grid rather than CSS columns:
+   multi-column inside a scrolling box balances against the scroll height and
+   behaves unpredictably, while grid just places the panels. */
+@media (min-width: 1000px) {
+  #sidebar {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 0 16px;
+    align-content: start;
+    /* Each panel keeps its own height instead of stretching to the tallest in
+       its row -- otherwise the drop zone becomes a tall empty box beside a
+       long list. */
+    align-items: start;
+  }
+  #sidebar > header { grid-column: 1 / -1; }
+}
 
 h1 { font-size: 18px; margin: 0; letter-spacing: 0.2px; }
 h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px;
@@ -87,6 +150,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin: 0 0 8px; }
 .stats dt { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
 .stats dd { margin: 0; font-size: 17px; font-weight: 600; }
+/* A second, quieter figure under a stat -- descent under ascent. Same cell,
+   so the two-column grid stays full rather than growing a hole. */
+.stats dd .sub { display: block; font-size: 12px; font-weight: 400;
+                 color: var(--muted); margin-top: 1px; }
 
 .list { list-style: none; margin: 0; padding: 0; }
 .list li {
@@ -100,6 +167,19 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .list .warn-text { color: var(--warn); font-size: 12px; display: block; }
 .list li.clickable { cursor: pointer; }
 .list li.clickable:hover { background: #2a303a; }
+
+/* The wind line under a weather row. `inline-block` is required on the arrow:
+   a transform does nothing to an inline box. */
+.wind { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.wind-arrow { display: inline-block; margin-right: 5px; font-size: 14px;
+              line-height: 1; color: var(--text); }
+
+/* The off-route marker on a stop. The distinction is carried by the words and
+   the arrow, never by colour alone: printing forces every panel to #111, so a
+   colour-only cue would vanish on paper -- and one man in twelve would not see
+   it on screen either. */
+.detour { display: block; font-size: 12px; color: var(--muted); margin-top: 1px; }
+.detour.away { font-weight: 600; }
 
 .score { font-weight: 700; font-variant-numeric: tabular-nums; }
 .score.good { color: var(--good); }
@@ -116,11 +196,28 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
          border: 1px solid var(--border); color: var(--muted); }
 
 #profile-wrap {
-  height: 130px; border-top: 1px solid var(--border);
+  height: 156px; border-top: 1px solid var(--border);
   background: var(--panel); padding: 6px 10px 2px; position: relative;
 }
-#profile { width: 100%; height: 100px; display: block; }
+/* No preserveAspectRatio="none": the viewBox is set from the element's own
+   pixel size and redrawn on resize, so stretching would only ever distort the
+   strokes and the labels. touch-action keeps a drag along the profile from
+   scrolling the page on an iPad, which is where this gets read. */
+#profile { width: 100%; height: 122px; display: block; touch-action: none; }
 #profile-readout { position: absolute; top: 8px; right: 14px; }
+
+#profile-legend {
+  position: absolute; bottom: 4px; right: 14px;
+  display: flex; align-items: center; gap: 3px;
+}
+#profile-legend .swatch {
+  width: 12px; height: 8px; border-radius: 2px; display: inline-block;
+}
+#profile-legend .tiny { margin-left: 6px; }
+#profile-legend .demanding-key {
+  margin-left: 10px; background: #ffc74a16; border-bottom: 2px solid var(--warn);
+}
+.demanding-flag { color: var(--warn); }
 
 footer { margin-top: 18px; line-height: 1.45; }
 
@@ -131,11 +228,11 @@ footer { margin-top: 18px; line-height: 1.45; }
 .leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
 .leaflet-popup-content b { color: var(--accent); }
 
+/* On a phone the map earns less of the screen: the panels are what you read
+   in an armchair the evening before, and 58vh of map leaves too little of
+   them visible to scroll comfortably. */
 @media (max-width: 820px) {
-  #layout { flex-direction: column; }
-  #sidebar { width: 100%; flex: 0 0 auto; max-height: 50vh; border-right: none;
-             border-bottom: 1px solid var(--border); }
-  #map-area { min-height: 50vh; }
+  #map-area { flex: 0 0 45vh; }
 }
 
 /* ---------------------------------------------------- touring feature styles */
@@ -223,3 +320,152 @@ button.secondary:disabled { opacity: .5; cursor: default; border-color: var(--bo
   cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 6px;
 }
 .icon-button:hover { color: var(--bad); }
+
+/* ------------------------------------------------------------- the dialog */
+
+#print-dialog {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 18px; max-width: 420px;
+}
+#print-dialog::backdrop { background: #000a; }
+#print-dialog menu { display: flex; gap: 8px; justify-content: flex-end;
+                     margin: 16px 0 0; padding: 0; }
+/* Shared by both pick-what-you-want dialogs: the printed sheet and the GPX. */
+#print-options, #export-options { display: grid; gap: 6px; margin-top: 12px; }
+#print-options label, #export-options label {
+  display: flex; align-items: center; gap: 8px;
+}
+#print-options .count, #export-options .count {
+  color: var(--muted); font-size: 12px;
+}
+#print-header { display: none; }
+
+/* The map, briefly wearing its paper shape.
+ *
+ * A4 less 12 mm margins is 186 mm wide, and the print rule gives the map 95 mm
+ * of height. At 96 dpi that is 703 x 359 CSS pixels, and the numbers have to
+ * match: `fitBounds` solves for the box it is given, so fitting the route in a
+ * 1280x476 box and then printing it into a 703x359 one shows a fraction of the
+ * route -- which is exactly what it did. */
+body.print-map #map-area { flex: 0 0 auto; }
+/* `flex-basis`, not just `height`. #map is `flex: 1` inside a column, and in a
+   flex container the basis decides the main size -- a plain `height` here was
+   ignored and the map measured 703x0, which fits no route at all. */
+body.print-map #map { flex: 0 0 359px; width: 703px; height: 359px; }
+
+/* ------------------------------------------------------------------ print
+
+   The app is dark because a map reads better against dark chrome. Paper is
+   not, and printing the screen palette would spend a cartridge on the
+   background. So print gets its own light one, and only the parts the export
+   dialog asked for: `data-print` carries the selection and every optional
+   section is hidden unless its word appears in it.
+
+   The map prints at whatever size it has on screen. That is deliberate --
+   resizing it for paper means telling Leaflet, waiting for tiles that may not
+   come, and printing whatever had arrived by then. Framing it with the split
+   handle is a thing the rider can see the result of. */
+@media print {
+  @page { size: A4; margin: 12mm; }
+
+  html, body { height: auto; background: #fff; color: #111; }
+
+  /* Still a flex column, with print's own order. `display: block` was the
+     obvious move and put the sidebar first, because the sidebar comes first in
+     the document -- it is only `order` that puts the map on top on screen, and
+     block layout throws `order` away along with the flex basis that gives the
+     map its height. */
+  #layout { display: flex; flex-direction: column; height: auto; }
+  #print-header { order: 0; }
+  #map-area { order: 1; }
+  #sidebar { order: 2; }
+
+  /* Nothing in here keeps a screen background: a panel printed dark is the
+     cartridge this palette exists to save. Borders and marks are restated
+     where they matter. */
+  #sidebar, #sidebar *, #profile-wrap, .panel, .banner, .verdict {
+    background: #fff !important; color: #111;
+  }
+
+  /* Chrome, controls and anything that is not the ride. */
+  #splitter, #drop-zone, #plan, #saved-panel, #offline-panel, #cache-banner,
+  #error, .chips, #curviness-legend, #map-overlay, header,
+  .leaflet-control-container, #print-dialog,
+  #alternate-panel, #incident-panel { display: none !important; }
+
+  /* "planned stop" marks the stations the fuel planner actually chose, which
+     is the most load-bearing thing on a paper route sheet -- it was being
+     hidden along with the screen chrome. The pill's own border is a dark
+     slate picked for a dark panel; on white it needs restating, like the
+     other marks here. */
+  .clickable .badge { border-color: #111; color: #111; font-weight: 600; }
+
+  #print-header {
+    display: block; margin: 0 0 6mm; padding: 0 0 3mm;
+    border-bottom: 1.5pt solid #111;
+  }
+  #print-header h1 { font-size: 16pt; margin: 0 0 2mm; }
+  #print-header .facts { font-size: 9pt; color: #444; }
+
+  /* An explicit height, because flex-basis on #map-area is a screen-layout
+     idea and `#map { flex: 1 }` inside an auto-height box is zero. 95mm is
+     about a third of the usable page. */
+  #map-area { flex: none; display: block; }
+  /* White, not the screen's near-black: a tile that did not load should print
+     as a gap rather than as a solid rectangle of ink. */
+  /* 95 mm, matching the 359 px the map was fitted into. Changing one of these
+     without the other is the bug this pair exists to prevent. */
+  #map { height: 95mm; border: 0.5pt solid #999; background: #fff; }
+  /* The header already names the route; the panel heading would say it twice. */
+  #route-name { display: none; }
+  /* Tiles and the route line are the point of printing a map at all. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Leaflet fades a tile in, and a snapshot taken mid-fade prints the part of
+     the fade it caught -- which can be nothing. On paper there is no animation
+     worth having, so they are simply opaque. */
+  .leaflet-tile { opacity: 1 !important; visibility: visible !important; }
+  .leaflet-fade-anim .leaflet-tile { transition: none !important; }
+
+  #sidebar {
+    display: block; width: auto; overflow: visible; padding: 0;
+    background: #fff; border: none;
+  }
+  .panel {
+    background: #fff; border: none; padding: 0; margin: 0 0 6mm;
+    break-inside: auto;
+  }
+  .panel h2 {
+    font-size: 11pt; color: #111; border-bottom: 0.5pt solid #bbb;
+    padding-bottom: 1mm; margin: 0 0 2mm; break-after: avoid;
+  }
+  .list li {
+    break-inside: avoid; padding: 1mm 0; border-bottom: 0.25pt solid #ddd;
+    font-size: 9pt;
+  }
+  .where { font-weight: 600; min-width: 16mm; display: inline-block; }
+  .muted, .tiny, .warn-text { color: #555; }
+  .verdict { border: 0.5pt solid #111; padding: 2mm; margin: 0 0 3mm; }
+  .verdict.bad { border-width: 1.5pt; }
+
+  /* Only what the dialog asked for -- and everything, when nobody asked.
+     `body[data-print]` is load-bearing. Without it these read as
+     "hide unless the attribute names this section", and an absent attribute
+     names nothing, so printing from the browser's own command -- Cmd-P, or
+     Share > Print on an iPad, which is how anyone would reach for it --
+     hid every section and produced one blank page. */
+  body[data-print]:not([data-print~="map"]) #map-area,
+  body[data-print]:not([data-print~="profile"]) #profile-wrap,
+  body[data-print]:not([data-print~="summary"]) #summary,
+  body[data-print]:not([data-print~="weather"]) #weather-panel,
+  body[data-print]:not([data-print~="pois"]) #fuel-panel,
+  body[data-print]:not([data-print~="hazards"]) #hazard-panel,
+  body[data-print]:not([data-print~="demanding"]) #demanding-panel {
+    display: none !important;
+  }
+
+  #profile-wrap { height: auto; border: none; padding: 0; margin-top: 4mm; }
+  #profile { height: 40mm; }
+  #profile-readout { display: none; }
+  #profile-legend { position: static; justify-content: flex-start; margin-top: 1mm; }
+}

@@ -35,6 +35,13 @@ export async function register() {
       listeners.forEach((fn) => fn(event.data || {}));
     });
     await navigator.serviceWorker.ready;
+    // `ready` means a worker is active, not that it controls this page. On the
+    // first load after registering — which is every load after clearing site
+    // data — `controller` is still null for a moment while the worker claims
+    // its clients, and every postMessage in this module is silently dropped
+    // when it is. The tile panel then sits on its initial "Checking…" for
+    // ever, because the stats reply it is waiting for was never asked for.
+    await untilControlling();
     return registration;
   } catch (err) {
     // Registration fails for reasons worth seeing: a scope the worker's path
@@ -57,6 +64,34 @@ export function onMessage(fn) {
 
 function controller() {
   return navigator.serviceWorker && navigator.serviceWorker.controller;
+}
+
+/**
+ * Resolve once a worker is controlling this page, or give up.
+ *
+ * The worker calls `clients.claim()`, so control arrives shortly after
+ * activation and `controllerchange` is how it announces itself. The timeout is
+ * not a formality: if control never arrives, the caller must be told so it can
+ * say why rather than leaving a label mid-sentence.
+ */
+function untilControlling(timeoutMs = 5000) {
+  if (controller()) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    const done = (value) => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onChange);
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const onChange = () => done(true);
+    const timer = setTimeout(() => done(false), timeoutMs);
+    navigator.serviceWorker.addEventListener('controllerchange', onChange);
+  });
+}
+
+/** Whether messages to the worker will actually reach it. */
+export function controlling() {
+  return Boolean(controller());
 }
 
 export function requestStats() {

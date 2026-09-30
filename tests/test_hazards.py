@@ -298,3 +298,68 @@ async def test_a_complete_answer_keeps_the_long_cache_life(route, settings, cach
 
     assert result["partial"] is False
     assert ttls == [settings.hazard_ttl_s]
+
+
+# ------------------------------------------- on the route, or merely touching
+
+def _index(route):
+    return geo.RouteIndex(route.all_latlon, 300.0)
+
+
+def test_a_closure_along_the_route_is_on_the_route(route):
+    """The route runs due north along lon 11.0; so does this closure."""
+    closed = [(48.02 + i * 0.001, 11.0) for i in range(10)]   # ~1.1 km along it
+
+    assert hazards._runs_along_route(closed, _index(route), 60.0)
+
+
+def test_a_side_road_crossing_the_route_is_not(route):
+    """The case no corridor width can exclude.
+
+    It meets the route at a junction, so its nearest vertex is zero metres off
+    the route and it reads exactly like a closure of the road being ridden.
+    What tells them apart is that it leaves immediately: a few hundred metres
+    of side road against kilometres of company.
+    """
+    crossing = [(48.05, 11.0 + i * 0.002) for i in range(20)]  # east, ~3 km
+
+    assert not hazards._runs_along_route(crossing, _index(route), 60.0)
+
+
+def test_a_short_closure_on_the_route_is_not_dismissed_for_being_short(route):
+    """A closed 80 m bridge is a closed bridge."""
+    bridge = [(48.03, 11.0), (48.0307, 11.0)]                  # ~78 m
+
+    assert hazards._runs_along_route(bridge, _index(route), 60.0)
+
+
+def test_a_road_running_parallel_to_the_route_is_not_on_it(route):
+    """Inside the 150 m search corridor, outside the 60 m on-route distance."""
+    service_road = [(48.02 + i * 0.001, 11.0013) for i in range(10)]  # ~100 m east
+
+    assert not hazards._runs_along_route(service_road, _index(route), 60.0)
+
+
+def test_a_barrier_node_is_judged_by_distance_alone(route):
+    """A gate has no length to run alongside anything."""
+    assert hazards._runs_along_route([(48.02, 11.0)], _index(route), 60.0)
+
+
+async def test_closures_off_the_route_are_counted_not_hidden(settings, cache, route):
+    """A quiet panel should be a statement, not an absence of one."""
+    payload = {"elements": [
+        {"type": "way", "id": 1, "tags": {"highway": "construction"},
+         "geometry": [{"lat": 48.02 + i * 0.001, "lon": 11.0} for i in range(10)]},
+        {"type": "way", "id": 2, "tags": {"highway": "construction"},
+         "geometry": [{"lat": 48.05, "lon": 11.0 + i * 0.002} for i in range(20)]},
+    ]}
+
+    def handler(request):
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await hazards.find_hazards(route, settings, client, cache)
+
+    assert len(result["hazards"]) == 1, "only the one along the route"
+    assert result["nearby"] == 1
+    assert "on other roads" in result["note"]

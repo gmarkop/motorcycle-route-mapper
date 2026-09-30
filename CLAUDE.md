@@ -14,6 +14,25 @@ Owner: gmarkop. Repo: `gmarkop/motorcycle-route-mapper` (**private**).
 and the whole self-hosted Overpass chapter. The owner runs it on a 2 GB Debian
 box behind Tailscale.
 
+### The app works end to end (9 September 2026)
+
+Athens-Volos, 295 km, 18,078 recorded points, every layer through the running
+app on the owner's 2 GB Debian box:
+
+    curviness 5.3s   elevation 4.7s   alternates 3.6s   incidents 3.1s
+    hazards   3.0s   pois      2.3s   weather    0.3s
+    all layers together: 5.3s
+
+Against **56.6 s** earlier the same day, and against a version that showed
+weather and nothing else. Three faults, found in this order and each hidden by
+the one before it: layers blocking the event loop (the route index), the
+elevation layer spending a whole minute's API allowance (halved the samples),
+and before both, a corridor that searched a fraction of the road.
+
+The `--app` timing mode is what found them. Service checks answer "is Overpass
+fast?"; only timing the layers together answers "why am I waiting", and those
+two questions had silently come apart.
+
 ### The self-hosted Overpass is live and is the headline result
 
 A tag-filtered Greece + Italy extract — 25 MB from ~2.3 GB of country data —
@@ -29,6 +48,54 @@ Measured on the 389 km Pavliani route:
 **Failing chunks on the public mirrors are the expected result, not a fault.**
 Every endpoint is measured in turn so the fallback's behaviour is known; a
 Greek or Italian route never reaches them. Do not go looking for a bug there.
+
+### Next session: build the full extract (planned 8 September, to run 9th)
+
+Two real trips are now driving the coverage, and between them they want nearly
+every configured country:
+
+* **June 2027, Greece to Poland** — via North Macedonia, Serbia, Hungary,
+  Slovakia; back through Romania and Bulgaria. Hungary and Slovakia were added
+  for this: the owner named the countries he is *going to*, and Serbia does not
+  border Slovakia.
+* **Germany** — Igoumenitsa-Venice ferry, then Austria, Germany, Belgium,
+  Luxembourg, Switzerland. Luxembourg and Switzerland do not border each other,
+  so that leg needs a country in between. France was carrying it and has been
+  dropped (2026-09-14): Germany connects the two as well and is in the list
+  anyway, while France was one of the largest downloads and on neither trip
+  otherwise. **A route through France still works** — the coverage polygons
+  place it outside the extract and it falls back to the public servers, which
+  is slower but correct rather than silently empty.
+  Slovenia was added on 2026-09-14: Italy borders Austria directly, so it is
+  not required, but it is the other way north out of Venice and small enough
+  that having it searched costs nothing.
+  Croatia followed the same day, for the Istrian and Dalmatian coast, and then
+  Bosnia and Albania, which completes the chain this file had already named
+  under the coverage-polygon note: Slovenia, Croatia, Bosnia, Montenegro and
+  Albania are what an overland run from Italy to Greece crosses. Bosnia is not
+  optional once the Dalmatian coast is -- the Neum corridor cuts the coast road
+  in two, so Split to Dubrovnik leaves Croatia and comes back.
+
+**The box is the constraint: 1.9 GiB RAM, 2.9 GiB swap, 134 GB disk.** That is
+under the 4 GB the Overpass image documents as its minimum, and 17 countries is
+roughly 18 GB of downloads filtering to ~200 MB — about eight times the only
+import that has ever succeeded there.
+
+The agreed plan:
+
+1. Add a temporary 8 GB swapfile before importing, removed afterwards. Cheap,
+   and swap is what decides whether the sort completes.
+2. Download and filter all 17 in one run (disk and time only, no memory risk).
+3. Import in two stages, because once every country is filtered the merge
+   always includes all of them: `--only` the Poland trip's eight first, verify
+   it serves, then the full build. Costs one extra import, and leaves a working
+   eight-country server if the large one is killed.
+4. Watch for the OOM killer: `sudo dmesg -T | grep -i "killed process"`. If it
+   names `update_database`, fall back to the eight and treat Germany's
+   countries as a separate build nearer that trip.
+
+Rebuild both extracts in **May 2027**: `OVERPASS_META=no` means no incremental
+updates, so data is frozen at build time and roadworks are exactly what moves.
 
 ### Immediately next, both unblocked
 
@@ -519,6 +586,106 @@ reintroducing exactly the silent corridor gap this project spent a week
 removing. The test has to be on the *recorded* spacing, before simplification.
 `test_a_straight_road_described_by_the_file_is_still_filled` exists to hold
 that line.
+### The owner's actual usage decides the timeouts (8 September 2026)
+
+A German route on the phone showed weather and then gave up: Overpass out of
+time, elevation rate-limited. Germany is outside the Greece + Italy coverage,
+so both Overpass layers fell back to the public servers, where the
+corridor-dense coordinate list is expensive — and the 120-second budget, tuned
+for a rider standing at a petrol station, cut it off.
+
+**He does not use it that way.** Routes are consulted the evening before the
+ride, from an armchair. Latency is nearly free; a closure that never appeared
+is not. That single fact settles a question no amount of measurement could:
+when the two conflict, wait rather than truncate.
+
+So the budget follows the server, like the concurrency already did.
+`MOTO_OVERPASS_DEADLINE` (120 s) is for your own instance, which is fast enough
+that it never binds. `MOTO_OVERPASS_PUBLIC_DEADLINE` (600 s) is for a fallback
+route. Note this raises the effective default for anyone with no local server
+from 120 s to 600 s, deliberately.
+
+**Do not "fix" this by thinning the corridor for public routes.** That trades a
+visible wait for an invisible gap, which is the bug this project has already
+spent a week removing.
+
+### Two layers asked for the same heights at once
+
+The 429 was not Open-Meteo being stingy. `/elevation` and `/curviness` are
+separate endpoints the page requests together, and both call
+`elevation.profile` for the same route. Neither has populated the cache when
+the other starts, so both fetched every batch and the second was rate-limited.
+
+`elevation.lookup` now shares the in-flight request: a second caller awaits the
+first rather than repeating it. Batches are also capped at two at a time and a
+429 is retried with backoff, honouring `Retry-After`, instead of being
+surfaced. Verified by removing the sharing and watching the test fail.
+
+A cache alone cannot fix this. Nothing is in it until the first answer returns,
+and the whole problem happens before then.
+
+### Every layer took 51 seconds because one of them held the loop
+
+The `--app` timing mode, added because the service checks and the rider's
+experience had stopped agreeing, gave the answer in one run on a 295 km Greek
+route:
+
+    curviness  56.6s   elevation 56.1s   weather 52.7s   alternates 51.7s
+    incidents  51.2s   hazards   51.0s   pois    50.5s
+
+Everything lands together at ~51 s — including `incidents`, which for a Greek
+route returns "no feed covers this route" without touching the network, and
+`pois`, whose Overpass query measured 1.1 s. Layers doing no work waited exactly
+as long as layers doing all of it. That shape is not seven slow layers; it is
+one thing holding the event loop while the rest queue.
+
+Profiled on an 18,078-point route: `_elements_to_pois` 5.3 s and
+`_elements_to_hazards` 8.9 s, both pure CPU inside async handlers. 235 fuel
+stops against 18,000 segments is four million distance tests, and the hazard
+path was worse — a full polyline scan for the distance, then a *second* full
+scan for the nearest vertex, per vertex, per hazard. The owner's box is slower
+than the machine this was measured on, which is how 14 s becomes 51.
+
+`geo.RouteIndex` buckets segments into a grid sized to the caller's reach, so a
+lookup tests the containing cell and its eight neighbours instead of the whole
+route. Measured on the same data: **14.21 s of blocking CPU became 0.16 s**, with
+identical answers on all 235 probes.
+
+**Read the shape of a timing table before reading the numbers.** Everything
+finishing together means contention, not slowness, and no amount of optimising
+the slowest row would have found this — the slowest row was a symptom.
+
+Still worth doing: the remaining synchronous work should move off the event
+loop with `asyncio.to_thread`, so that a genuinely expensive layer delays only
+itself. The index removed the pain; it did not remove the coupling.
+
+### The elevation 429 was arithmetic, not bad luck
+
+After the route index took the app from 56.6 s to 8.2 s, elevation was the last
+failing layer — still rate-limited, still 429, on every load of a new route.
+
+Open-Meteo's free tier allows 600 calls a minute, and a request carrying many
+coordinates is counted as though those coordinates had been fetched in a loop.
+`max_elevation_samples` was **600**. One layer, on one route, spent the entire
+minute's allowance — so it was refused every time, never cached a result, and
+therefore failed again on the next load. It could not have worked.
+
+Now 300, which leaves room for the weather layer and for looking at a second
+route. `MAX_CONCURRENT` also drops from 2 to 1: with a coordinate-weighted
+limit, parallel batches do not reduce what a route costs, only how fast it is
+spent, and a burst is the shape most likely to be refused.
+
+The cost is resolution — a height every ~1 km on a 295 km route rather than
+every ~500 m. A short sharp ramp is smoothed away; a mountain pass, which is
+what the demanding-stretches panel exists for, is not. A self-hosted terrain
+model would lift the limit entirely if that ever matters.
+
+**Confirmed on the box.** Open-Meteo documents that the weighting exists but
+not its exact form, so "600 samples = 600 weighted calls" was read from their
+guidance plus the symptom rather than from a specification — and the test was
+stated in advance: if 429s persisted at 300 the weighting was not the
+mechanism. They did not. Elevation passed at 4.7 s on the route that had failed
+every previous load.
 
 ### Open ideas, nothing agreed
 
@@ -726,3 +893,572 @@ coordinates land inside Germany, which is what would catch a silent latitude
 The script honours `MOTO_AUTOBAHN_URL`, so it can be pointed at
 `tools/stub_apis.py` as a self-test; the Germany bounds check is skipped when
 the endpoint is not the public API.
+
+## POI categories, decided by census (2026-09)
+
+`tools/tag_census.py` counted every candidate tag along two real routes,
+against a public server rather than the local extract -- the extract holds only
+the tags `KEEP` was told to keep, so a candidate would have come back zero
+meaning "not imported", not "not there".
+
+Per 100 km, Athens-Volos (295 km, motorway) and Bolzano-Cortina (77 km, Alps):
+
+| tag | Greece | Italy | verdict |
+| --- | --- | --- | --- |
+| `amenity=fuel` | 37.3 | 11.7 | shipped already |
+| `amenity=cafe` | 40.4 | 86.1 | shipped already |
+| `tourism=viewpoint` | 1.0 | 54.8 | shipped already |
+| `tourism=hotel` | 8.1 | 124.0 | **built** |
+| `tourism=guest_house` | 0.7 | 14.4 | **built** |
+| `amenity=motorcycle_parking` | 0.0 | 11.7 | **built** |
+| `tourism=camp_site` | 0.7 | 0.0 | built, rides free in the same selector |
+| `tourism=motel` | 0.0 | 0.0 | built, common further north |
+| `shop=motorcycle` | 0.3 | 0.0 | rejected |
+| `shop=motorcycle_repair` | 0.0 | 0.0 | rejected |
+| `service:motorcycle:repair` | -- | 0.0 | rejected |
+| `shop=motorcycle_parts` | -- | 0.0 | rejected |
+| `motorcycle:theme` | 0.0 | 0.0 | rejected |
+| `motorcycle_friendly` | 0.0 | 0.0 | rejected |
+
+Findings worth keeping:
+
+- **Motorcycle-friendly cafes and hotels cannot be built.** `motorcycle_friendly`
+  and `motorcycle:theme` are zero on both routes, matching the OSM wiki's own
+  "rarely tagged and not used by any real data consumer". A good idea with no
+  data behind it.
+- **One country is not a measurement.** `amenity=motorcycle_parking` is zero in
+  Greece and 11.7 / 100 km in Italy. It was written off on the Greek run and
+  the Italian run brought it back.
+- **`service:motorcycle:repair` did not rescue repair.** The hypothesis was that
+  `shop=motorcycle_repair`'s zero was a tagging scheme rather than an absence.
+  It is an absence.
+- **Viewpoints are 55x denser in the Alps than along the A1** (1.0 vs 54.8).
+  Partly route type, partly how thoroughly South Tyrol is mapped. A motorway
+  route is a poor place to judge any scenic category.
+- **A dense category cannot share a cap with a sparse one.** Accommodation runs
+  124 / 100 km in the Dolomites against 11.7 for fuel, so one shared 300-place
+  budget would be spent on hotels early in a long route and drop the later fuel
+  stops. `plan_fuel_stops` reads that list, so the symptom would not have been a
+  short list -- it would have been an invented fuel gap. Caps are per category
+  (`Settings.poi_limit`), pinned by a test that fails with 1 of 10 fuel stops
+  surviving under the old shared cap.
+- **`KEEP` and `pois.CATEGORY_TAGS` must agree**, and now a test says so. A tag
+  queried but not kept returns nothing from the local server, which reads as
+  "none along this route".
+
+**The local extract must be rebuilt before the new categories work locally.**
+Greece and Italy hold no accommodation or parking tags until then; routes there
+will show empty Sleep and Parking chips while a public fallback would fill them.
+
+### After every extract rebuild
+
+`python tools/check_extract.py` counts every tag the app queries against your
+own server, across the whole coverage area. Run it before trusting a route.
+
+The two tools are opposites and both are needed:
+
+| | asks | answers |
+| --- | --- | --- |
+| `tag_census.py` | a public server | does this tag exist in the world? |
+| `check_extract.py` | your own server | did my build actually keep it? |
+
+`tests/test_docs.py` already fails if `KEEP` and `pois.CATEGORY_TAGS` disagree.
+What no test can check is whether the build you ran and the import you did put
+that data on the server that is running -- three separate steps, each of which
+has silently not happened at least once in this project.
+
+### The rebuild that did nothing (2026-09)
+
+KEEP gained the accommodation and parking tags, the rebuild ran, and the server
+came back holding **17 hotels across Greece and Italy**. The census had found 95
+along one 77 km Dolomites road.
+
+`build-extract.sh` cached filtered countries by filename alone:
+
+```bash
+[ -f "$out" ] && { echo "    $name: already filtered"; continue; }
+```
+
+The filtered files predated the KEEP change, so every country reported "already
+filtered", `osmium tags-filter` never ran, and the merge rebuilt the extract
+from the old tag set. Everything else was green: KEEP had the tags, and
+`test_docs.py` confirmed KEEP and the app agreed.
+
+Two things now stop it:
+
+- The signature of KEEP is stored beside each filtered file. A change re-filters,
+  and a filtered file with no signature is re-filtered rather than trusted. The
+  merge refuses stale inputs instead of quietly including them.
+- `check_extract.py` no longer treats any non-zero count as a pass. **Zero is not
+  the only way an import fails**: a tag left out of the filter still arrives in
+  small numbers, as members of relations that were kept, so 17 hotels looked like
+  success. Tags sharing a key sit within an order of magnitude of each other in
+  real data, so anything under 1/100th of its healthiest peer is reported. The
+  closest healthy real case measured is `highway=construction` at 1/58 of
+  `barrier`, which is why the cutoff is 1/100 and not 1/10.
+
+`tests/test_build_extract.py` runs the real script against a local stand-in for
+Geofabrik with real osmium, and fails on the old script in both directions:
+a changed KEEP must re-filter, an unchanged one must still reuse.
+
+### The download that resumed into a different file (2026-09)
+
+The rebuild after the KEEP fix stopped with:
+
+    PBF error: invalid BlobHeader size (> max_blob_header_size)
+
+`build-extract.sh` ran `curl -fL -C -` unconditionally on every build, against
+a raw file that was already complete. Geofabrik regenerates each extract daily
+and it grows, so the resume asked for "bytes N onward", received bytes N onward
+of the **newer, larger** file, and appended them to the older file's first N
+bytes. The result is the right size and unreadable.
+
+Reproduced end to end against a Range-serving stand-in: the old script produces
+a 302-byte file where today's real file is also 302 bytes, matching neither
+day, and osmium fails with exactly that message. It had been sitting in the
+raw directory for several builds, invisible, because the filtering step was
+being skipped -- so nothing ever opened the file. One silent bug hid another.
+
+Downloads now resume into a `.part`, are checked against Geofabrik's published
+`.md5`, are opened with `osmium fileinfo` before being trusted, and only then
+moved into place. A file in `raw/` is therefore one that has been verified,
+which is what makes skipping it on the next run honest. On a mismatch it starts
+over once from nothing rather than resuming the damage.
+
+`osmium fileinfo -F pbf` is required, not tidiness: osmium picks its reader
+from the file extension, and the extension is `.part`. Without it every good
+download is rejected as unreadable and fetched forever -- caught by running it,
+not by reading it.
+
+### The rebuild that worked (2026-09), and the checker crying wolf
+
+Greece + Italy, after re-filtering and re-importing:
+
+| tag | before | after |
+| --- | --- | --- |
+| `tourism=hotel` | 17 | 32,727 |
+| `tourism=guest_house` | 23 | 15,861 |
+| `tourism=camp_site` | 2 | 2,966 |
+| `amenity=motorcycle_parking` | 2 | 5,471 |
+| `tourism=motel` | 0 | 266 |
+
+`tourism=motel` at 266 tripped the 1/100 ratio rule against 32,727 hotels --
+and is simply true. Motels are a North American idea; the census had already
+measured zero along both routes. A checker that cries wolf is worse than none,
+because a real failure hides among the false alarms.
+
+The ratio now reports rather than fails, and the reason is worth keeping: every
+tag of the import that actually broke came back **under a hundred across two
+whole countries** -- 17 hotels, 23 guest houses, 2 camp sites, 2 parking. The
+absolute floor caught all five. The ratio caught none of them, and produced the
+only false alarm. So the floor is the verdict and the ratio is a question.
+
+Settling that question needs a public server, and the first version asked it
+for every hotel between Tunisia and Ukraine, which hung. It is now opt-in
+(`--second-opinion`) and asks about a 1.5-degree sample box, found by asking
+the local server which areas actually hold data -- free, and guaranteed to be
+inside the coverage rather than out in the Adriatic. Shares are what get
+compared, not counts.
+
+- motel: 0.0081 per hotel here, 0.0085 there — rare, not missing.
+- hotel in the broken extract: 0.00095 per viewpoint here, 3.41 there — a
+  factor of 3,600, and unambiguous.
+
+The tolerance is a factor of ten, deliberately loose: regions really do differ,
+and the gap worth catching is thousands, not tens.
+
+### The census and the app agree (2026-09-11)
+
+Athens-Volos through the running app, against what `tag_census.py` had measured
+along the same route days earlier on a public server:
+
+| category | census | the app |
+| --- | --- | --- |
+| fuel | 110 | 110 |
+| accommodation | 28 | 29 |
+| viewpoint | 3 | 3 |
+| cafe | 119 | 96 |
+| motorcycle_parking | 0 | 0 |
+
+Fuel matching exactly -- same route, same 1 km corridor, different servers --
+is the strongest evidence available here that the local extract holds what the
+public one does along a real route. Accommodation is the same story at the same
+corridor.
+
+Cafe is lower by design, not by error: the app searches 300 m for a cafe and
+1000 m for fuel, while the census asked at 1000 m throughout. Worth remembering
+before reading a future gap as a fault.
+
+`motorcycle_parking: 0` is correct. Greece has none along this route and Italy
+has 11.7 per 100 km, which is why two countries were measured before building
+it.
+
+**`git pull` does not update the running service, and this cost a round here
+again.** The app kept answering with three categories while the extract held
+five, and `check_extract.py` could not have noticed: it verifies the server,
+not what the app asks the server for. The cache needed no clearing, though --
+the POI cache key is the query text, so a changed query misses by construction.
+
+### 98 of 100 (2026-09-11)
+
+A Greek route returned 98 places to stay against a cap of 100. Two more and the
+old behaviour would have kept the first 100 in route order and dropped the
+rest -- which does not read as a truncated list, it reads as a stretch of road
+with nowhere to sleep. On the far half of a ride, that is the worst place for
+the app to be quietly wrong.
+
+Categories are now thinned across the route (every Nth) rather than truncated
+at the front, and the payload carries `thinned` so the chip can say
+"100 of 340" instead of a bare 100. Verified end to end: 340 hotels over a
+75 km route keep coverage from km 0 to km 75, where truncation would have
+stopped at km 22.
+
+Same shape as the fuel-plan bug, and the same lesson: a partial answer that
+does not say it is partial is indistinguishable from a complete one.
+
+**Accommodation is on by default** (2026-09-11). It shipped off, reasoning that
+Alpine hotel density would bury the fuel stops. The owner then went looking for
+it twice and found an empty map both times. These routes are planned the
+evening before a multi-day ride, where a bed is what you came for. Density is
+handled by the thinning above, not by hiding the category.
+
+### Closures on the route, not near it (2026-09-11)
+
+The panel was cluttered with closures that are not on the ride, and the obvious
+fix -- a narrower corridor -- would not have worked. `_project_onto_route`
+takes the hazard's *closest* vertex, so a closed side road meeting the route at
+a junction reports **zero metres off route**. No corridor width excludes
+something that is touching.
+
+The question that separates them is not how close the nearest point is but how
+much of the way keeps company with the route: a junction contributes one
+segment, the road you are riding contributes its length. `_runs_along_route`
+measures that, requiring 200 m alongside or 60% of a short way's length, so a
+closed 80 m bridge on the route is not dismissed for being short.
+
+Searched wide, shown narrow -- the same shape `pois.py` uses. The 150 m search
+corridor is unchanged, because shrinking it is a recorded **don't**: a 250 m
+thinning inside a 150 m corridor is what once left most of a 389 km route
+unsearched. `MOTO_HAZARD_ON_ROUTE_M` (60 m) decides what is shown.
+
+Nothing is dropped silently. The payload carries `nearby`, the note says "3
+more closures are within 150 m of the route but on other roads", and an empty
+panel distinguishes "nothing closed on this route, 3 nearby" from "no closures
+at all" -- which are different answers, and the second is the reassuring one.
+
+### Why a deploy took two reloads to appear (2026-09-11)
+
+A layout change went live and the browser kept showing the old one. Not the
+install, not the server -- the service worker.
+
+```js
+const VERSION = 'v1';                       // never changed, all project long
+const SHELL_CACHE = `moto-shell-${VERSION}`;
+```
+
+The shell is served stale-while-revalidate, so every deploy reused the same
+cache: the first load rendered the old CSS and fetched the new one for next
+time. Two reloads to see any front-end change, and nothing anywhere said so --
+which reads as a deploy that did not happen, and has been mistaken for one.
+
+`/sw.js` is now served by the app with `VERSION` replaced by a sha256 of the
+shell assets themselves. The cache name changes exactly when what it holds
+changes, and not on a restart that altered nothing.
+
+**The tile cache is deliberately not versioned.** `activate` deletes every
+`moto-` cache that is not current, so a versioned tile cache name would throw
+away the map a rider downloaded for a route with no signal, on every update.
+Its name is kept exactly as first shipped so existing caches survive this
+change too. A test fails if anyone versions it.
+
+### The elevation profile, coloured by gradient (2026-09-11)
+
+The profile was a single orange line. It showed the shape of the hills and
+nothing about the ride: a 6% drag and a 6% descent drew identically, and the
+`gradient_pct` the elevation service computes for every sample was being thrown
+away by the frontend.
+
+Gradient is a polarity, so the scale is diverging -- two hues with a neutral
+grey midpoint, never a rainbow. The steps deliberately avoid the amber and
+green the map spends on curviness, so the two encodings are not confused, and
+were validated for colour-vision deficiency against the panel background
+rather than chosen by eye: worst adjacent pair ΔE 13.6 protan, 17.6 normal
+vision, all five above 3:1 contrast.
+
+Two things only checking caught:
+
+- The dark-blue "steep descent" band looked wrong in a screenshot and was
+  correct in the DOM. Squinting at a PNG is not a check.
+- **A tap on an iPad set the readout and instantly cleared it.** `pointerleave`
+  fires the moment a touch ends, so the cleanup wiped the reading the tap had
+  just produced -- the profile looked inert on the device it is most read on,
+  while working perfectly under a mouse. A lifted finger is not a pointer that
+  left, and keeping the reading is the better behaviour anyway: tap a spot, it
+  stays until you tap another.
+
+Also redrawn on resize, because the SVG is sized in pixels from its container
+and a rotated iPad would otherwise stretch the marks and the labels with them.
+
+Demanding stretches are shaded on the profile too. They arrive on the
+**curviness** payload while the profile arrives on the **elevation** one, from
+different endpoints in either order, so each redraws when the other lands
+rather than assuming it got there first. They are drawn as an annotation
+behind the line, in the amber the gradient ramp deliberately leaves free, and
+the readout says "twisty & steep" when the pointer is inside one.
+
+### Two ways the profile broke quietly (2026-09-11)
+
+Reported as "we lost the demanding stretches section" and "the line is static".
+Two unrelated-looking symptoms, two real fragilities, neither of which any
+existing check could see -- the Python suite never loads the page, and a broken
+page still renders enough to look alive.
+
+**`showDemanding` sat behind an early return.** `showCurviness` began
+`if (!payload.available || !payload.samples.length) return;`, so a curviness
+layer that could not be computed took the demanding panel down with it: no
+panel, no reason, which reads as a feature that was removed rather than one
+that could not run. `showDemanding` already knows how to explain itself; it is
+now called either way.
+
+**The legend was written before the pointer handlers were bound.** A page whose
+HTML is a version behind its JavaScript -- which a service worker produces
+easily -- drew the coloured line, threw on the missing legend element, and left
+the profile inert. The crosshair is the feature and the legend is chrome, so
+the chrome now goes last and tolerates being absent.
+
+Both are pinned by `tests/test_frontend.py`, which checks the ordering in the
+source. Unusual, and worth it: the ordering is the invariant, there is no JS
+harness here, and the handler ordering was got wrong once inside the very
+commit that fixed it.
+
+### The Germany rehearsal (2026-09-14)
+
+Measured on the owner's 1.9 GB box, before committing to a 17-country build:
+
+```
+germany   peak memory 1343 MB
+germany      4615 MB ->    55 MB
+```
+
+An 84x reduction, and the memory followed the input rather than the output --
+which is the thing `du` could never have told us.
+
+**The filter runs one country at a time, so peak memory is per country, not
+cumulative.** Germany is the largest extract in the list, so 1343 MB is the
+high-water mark for the whole build. Nothing later in a full run needs more.
+
+It did lean on swap: 572 MB of it. With roughly 672 MB already held by the
+system, Overpass and the app, 1343 + 672 is over the 1.9 GB of RAM, so the
+overflow went to swap and the run survived. Stopping the Overpass container and
+`moto-route` during a large build frees most of that and should keep it in
+memory.
+
+**What this did not test is the import.** Greece and Italy, 43.7 MB of bz2,
+produced a database of about 2.5 GB. Seventeen countries will be an order of
+magnitude more, and that is now the untested step -- disk and time rather than
+memory, but untested. Budget roughly: ~30 GB of raw downloads kept for reuse,
+~1 GB filtered and merged, and tens of GB of database, against 134 GB free.
+
+France is in `COUNTRIES` and is on neither planned trip -- Greece to Poland
+goes through the Balkans, and the German trip through Austria, Germany,
+Belgium, Luxembourg and Switzerland. Dropping it would save one of the largest
+downloads. Left in because the owner listed it.
+
+### The full-build budget, measured (2026-09-14)
+
+Sixteen countries, from Geofabrik's headers rather than from guesswork:
+
+| | |
+| --- | --- |
+| download | **12.86 GB** (20 countries, measured 2026-09-14) |
+| peak working disk (raw kept + filtered + merged) | **~14.8 GB** |
+| peak memory, one country at a time | **1343 MB** (germany) |
+| free on the box | 120 GB |
+
+The list is lopsided, which is worth knowing when trimming it again: germany
+4.51, italy 2.08 and poland 1.95 are 8.5 of the 12.9 GB, while liechtenstein,
+luxembourg, macedonia, montenegro and albania together come to about 0.15 GB.
+The whole Adriatic chain added afterwards -- Slovenia, Croatia, Bosnia,
+Albania -- cost 0.68 GB between them. That is the number worth remembering: a
+country you might merely pass through is close to free to have, and leaving it
+out costs a leg of the ride with no closures checked.
+
+Germany, Greece and Italy are already downloaded, so a full build from here
+fetches about 5.3 GB rather than 12.2 -- raw files are kept and reused.
+
+Two claims made during this that were wrong and are worth not repeating:
+
+- "Germany is the largest extract in the list" was false while France was in
+  it. France is 4.73 GB against Germany's 4.51. It is true now, which makes the
+  1343 MB rehearsal figure the real ceiling -- but it was right by luck until
+  France was dropped.
+- France looked removable because it was on neither trip. It was in fact
+  carrying the Luxembourg-Switzerland leg, which needs a country in between.
+  Germany does that too, so the removal stands.
+
+**Still unmeasured: the import.** Greece and Italy, 43.7 MB of bz2, made a
+database of roughly 2.5 GB. Sixteen countries will be an order of magnitude
+more -- disk and hours rather than memory. That is the one step of the full
+build that has never been run at scale.
+
+### The split between map and panels is draggable (2026-09-22)
+
+A fixed 58vh was always going to be wrong half the time: the map is what you
+zoom into and the panels are what you read, and which of them wants the room
+changes by the minute. The split is a `--map-height` custom property now, and
+the handle sets it.
+
+Three things the handle has to do that are easy to leave out:
+
+- **Tell Leaflet.** It caches its container size and a flexbox change fires no
+  resize event, so `mapview.resized()` calls `invalidateSize()` on every move.
+  The profile is redrawn for the same reason -- it is sized in pixels from its
+  own container.
+- **Capture the pointer.** Without `setPointerCapture` the drag dies the moment
+  the pointer outruns a 9 px strip, which is most drags. Pointer events rather
+  than mouse events, as everywhere else here, because this is used on an iPad.
+- **Answer the keyboard.** A separator that takes focus and ignores arrow keys
+  is worse than one that cannot be focused. Arrows nudge 20 px, Shift 60,
+  Home/End go to the limits.
+
+Clamped to 120 px of map and 110 px of panels, re-clamped on window resize
+since a stored split can fall outside a window that changed shape, and kept in
+`localStorage`. Verified by driving it: drag 476 to 651, ArrowUp twice to
+exactly 611, persisted across a reload, and a drag aimed at y=2000 stopping at
+710 in an 820 px window -- which is the clamp doing arithmetic rather than
+luck.
+
+### Print / save as PDF (2026-09-22)
+
+The browser already turns a page into a PDF, and a route sheet is a page: a
+map, some headings, some lists. What was missing was choosing what goes on it
+and a palette that does not spend a cartridge on a dark background. So there is
+no PDF library and no headless renderer -- which also keeps this off a 1.9 GB
+box that has enough to do.
+
+The POI categories are driven through `state.poiFilter`, so printed lists come
+out of the renderer the screen already uses. A second path that formatted POIs
+for paper would be a second place for them to disagree.
+
+**The map prints at its on-screen size, deliberately.** Resizing it for paper
+means telling Leaflet, waiting for tiles that may not come, and printing
+whatever arrived -- and the split handle already lets the rider frame it and
+see the result.
+
+Four things that only showed up by rendering it:
+
+- `display: block` on `#layout` printed the **sidebar first and no map at
+  all**. The sidebar comes first in the document and only `order` puts the map
+  above it; block layout discards `order` and the flex basis that gives the map
+  its height. Print keeps flex, with its own order and an explicit map height.
+- The profile printed as a **dark block with invisible labels**. Its grid and
+  label colours are SVG attributes, not CSS, so the stylesheet cannot reach
+  them -- it is redrawn with a paper palette instead.
+- Panel backgrounds stayed dark, which is the ink the light palette exists to
+  save.
+- The route name appeared twice, once in the print header and once as the
+  summary panel's heading.
+
+`#map` prints on white rather than the screen's near-black, so a tile that did
+not load is a gap instead of a rectangle of ink. `afterprint` restores the
+filter and the screen palette, with a two-second timer behind it because Safari
+does not always fire it.
+
+### The blank page on an iPad (2026-09-22)
+
+Printing from Safari's Share > Print gave one blank sheet. Not a Safari bug --
+mine, and it did the same on Cmd-P everywhere else.
+
+The section rules were written as `body:not([data-print~="map"])`, which reads
+as "hide unless the attribute names this section". An absent attribute names
+nothing, so every optional section matched and the page printed empty. The
+dialog sets `data-print`; the browser's own print command never does, and that
+is the command anyone reaches for first.
+
+`body[data-print]` on each rule is the fix: the selection applies only when
+somebody made one, and otherwise everything prints.
+
+Two things followed from the same mistake, both from hanging paper work off the
+dialog rather than off printing:
+
+- The print header was filled and the profile redrawn in paper ink only in the
+  dialog flow, so a native print got an empty header and a profile drawn for a
+  dark screen. Both are on `beforeprint` now, which fires however a print
+  starts.
+- `window.print()` was called synchronously inside the dialog's `close`
+  handler. Safari can still be tearing down the modal's top layer at that
+  point, and the snapshot it takes then is not the page. Deferred by a timeout.
+
+The general shape is worth keeping: **a feature reached through our own button
+is also reached through the browser's**, and the second path had never been
+tried.
+
+### The printed map showed a slice of the route (2026-09-22)
+
+"The map prints as you framed it" was a claim the stylesheet did not honour:
+print gives the map 95 mm of height, a different shape from the screen box, and
+Leaflet keeps centre and zoom when its container changes. A differently
+proportioned box at the same zoom shows less.
+
+The map is now put into the printed box's exact pixel shape *first* and then
+asked to fit the whole route, because `fitBounds` solves for the box it is
+given. A4 less 12 mm margins is 186 x 95 mm, which at 96 dpi is **703 x 359**
+CSS pixels; the screen-side `.print-map` box and the `@media print` rule have
+to agree, and a test holds them together.
+
+Three things found by measuring rather than reading:
+
+- `body.print-map #map { height: 359px }` produced a box of **703x0**. `#map`
+  is `flex: 1` inside a column, and in a flex container the basis decides the
+  main size -- a plain height is ignored. It needs `flex: 0 0 359px`.
+- **Leaflet's cached size was already wrong, before printing.** Showing the
+  elevation profile takes 156 px off the map and nothing told Leaflet, so it
+  spent the session believing its container was 156 px taller than it was --
+  `getBounds` wrong, clicks landing slightly off. Printing had been repairing
+  it by accident, which is how it surfaced: the restore looked broken and was
+  the first honest measurement. `showProfile` now calls `resized()`.
+- A `requestAnimationFrame` around the restore, added on the theory that
+  `invalidateSize` was reading a stale layout, fixed nothing and was removed.
+  The measurement disproved the diagnosis; the code went with it.
+
+The dialog path reframes and then awaits `tilesSettled()`, because a view that
+just changed zoom has none of its tiles yet. `beforeprint` cannot await
+anything -- the browser prints as soon as it returns -- so a print started from
+the browser's own command gets the right framing with whatever tiles are
+cached, and the route line and markers, which are drawn immediately.
+
+### The printed map had no map in it (2026-09-23)
+
+A PDF from the iPad showed the route over white. Reading the file settled it
+without guessing: **eight embedded images, all of them 41x41 marker shadows, a
+50x82 pin and four 40x40 icons. Not one 256-pixel tile.** The tiles had never
+rendered.
+
+The cause is in the service worker. On a cache miss it fetches, and when the
+fetch throws it returns `blankTile()` -- a 1x1 transparent PNG, so an uncached
+tile shows as nothing rather than as a broken-image icon. Reframing the map for
+paper changes the zoom, every tile at the new zoom is a cache miss, and a
+device that cannot reach the tile server at that moment gets eighteen
+transparent pixels.
+
+**`tilesSettled` counted them as loaded**, because a 1x1 image is `complete`
+with `naturalWidth > 0`. So the wait was satisfied instantly and the sheet
+printed. It now tells a placeholder apart by its single pixel, and the print
+flow says "the map will print without its background" in the page rather than
+printing in silence. It still prints -- the lists and the profile are most of
+the value.
+
+The offline tile cache covers zooms 9 to 13, which is where a fitted route view
+lands, so saving tiles for offline use before printing is the fix on a device
+with a poor route to the tile server.
+
+Two test-harness lessons, both of which produced confident wrong answers:
+
+- A flat-colour fake tile is optimised to a 1x1 image in the PDF, so the first
+  measurement looked exactly like the bug it was meant to detect.
+- **Playwright's `page.route` does not intercept requests made by a service
+  worker.** The fixture tiles were never served; the app was being fed the
+  worker's own placeholder. `service_workers="block"` on the context is what
+  makes tile interception work, and with it the same print produces nine
+  256x256 tiles in the PDF.
+

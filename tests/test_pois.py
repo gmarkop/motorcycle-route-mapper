@@ -122,19 +122,32 @@ def test_planning_terminates_on_pathological_input():
 
 # --------------------------------------------------------------- query + parse
 
-def test_query_covers_all_three_categories_at_the_widest_corridor(settings):
+def test_query_covers_every_category_at_the_widest_corridor(settings):
     """Walking the corridor is what Overpass charges for, so it is walked once
     at the widest radius. The per-category corridor is applied afterwards."""
     query = pois.build_query([(48.0, 11.0), (48.1, 11.0)], settings)
 
-    assert "fuel" in query and "cafe" in query
-    assert '"tourism"="viewpoint"' in query
+    for _, values in pois.CATEGORY_TAGS.values():
+        for value in values:
+            assert value in query, f"{value} is a category but is never asked for"
 
-    widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
-                 settings.viewpoint_corridor_m)
+    widest = max(pois._corridors(settings).values())
     assert f"around:{int(widest)}," in query
     assert f"around:{int(settings.cafe_corridor_m)}," not in query, \
         "a second, narrower corridor walk is the cost this avoids"
+
+
+def test_the_query_stays_one_statement_per_tag_key(settings):
+    """Adding categories must not add corridor walks.
+
+    The coordinate list is repeated in every statement, so a statement per
+    category would send the same corridor five times. Two keys, two statements
+    -- the same query cost as when there were three categories.
+    """
+    query = pois.build_query([(48.0, 11.0), (48.1, 11.0)], settings)
+
+    assert query.count("around:") == len({key for key, _ in
+                                          pois.CATEGORY_TAGS.values()}) == 2
 
 
 async def test_the_narrow_corridors_are_still_enforced(settings, cache):
@@ -187,7 +200,7 @@ async def test_pois_are_placed_along_the_route(route, settings, cache):
         result = await pois.find_pois(route, settings, client, cache)
 
     assert result["available"] is True
-    assert result["counts"] == {"fuel": 1, "cafe": 1, "viewpoint": 0}
+    assert result["counts"] == dict.fromkeys(pois.CATEGORIES, 0) | {"fuel": 1, "cafe": 1}
 
     # Sorted by position along the route, so the cafe at 48.2 comes first.
     assert [p["category"] for p in result["pois"]] == ["cafe", "fuel"]
@@ -287,3 +300,171 @@ async def test_rate_limiting_is_reported_in_plain_english(monkeypatch, route, se
     assert result["pois"] == []
     assert "429" in result["reason"]
     assert "rate-limiting" in result["reason"]
+
+
+# ------------------------------------------------- categories and their caps
+
+async def test_hotels_cannot_crowd_out_the_fuel_stops(settings, cache):
+    """The regression that adding accommodation would otherwise have caused.
+
+    The Dolomites census counted 124 hotels per 100 km against 11.7 fuel
+    stations. Under one shared cap, a route dense in hotels spends the whole
+    budget early and the later fuel stops are dropped -- and because
+    `plan_fuel_stops` reads that same truncated list, the app would not have
+    shown a short list. It would have reported a fuel gap that does not exist.
+    """
+    elements = []
+    # A wall of hotels over the first tenth of the route, far more than any cap.
+    for i in range(400):
+        elements.append({"type": "node", "id": 10_000 + i,
+                         "lat": 48.0 + i * 0.0002, "lon": 11.0,
+                         "tags": {"tourism": "hotel", "name": f"Hotel {i}"}})
+    # Fuel spread along the whole route, including well past the hotels.
+    for i in range(10):
+        elements.append({"type": "node", "id": 20_000 + i,
+                         "lat": 48.0 + i * 0.1, "lon": 11.0,
+                         "tags": {"amenity": "fuel", "name": f"Pump {i}"}})
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    assert result["counts"]["fuel"] == 10, "every fuel stop survived the hotels"
+    assert result["counts"]["accommodation"] == settings.max_accommodation
+    # The planner saw the whole route, so it invents no gap.
+    assert not result["fuel_plan"]["gaps"], result["fuel_plan"]["gaps"]
+
+
+async def test_each_category_is_capped_on_its_own(settings, cache):
+    settings.max_pois = 5
+    settings.max_accommodation = 3
+    elements = [{"type": "node", "id": 100 + i, "lat": 48.0 + i * 0.0005,
+                 "lon": 11.0, "tags": {"amenity": "cafe"}} for i in range(20)]
+    elements += [{"type": "node", "id": 200 + i, "lat": 48.0 + i * 0.0005,
+                  "lon": 11.0, "tags": {"tourism": "hotel"}} for i in range(20)]
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    assert result["counts"]["cafe"] == 5
+    assert result["counts"]["accommodation"] == 3
+
+
+async def test_a_camp_site_is_not_described_as_a_hotel(settings, cache):
+    """Four tags share one category, so the detail line has to say which."""
+    elements = [{"type": "node", "id": 1, "lat": 48.01, "lon": 11.0,
+                 "tags": {"tourism": "camp_site", "name": "Camping Alto"}}]
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    stay = next(p for p in result["pois"] if p["category"] == "accommodation")
+    assert "camp_site" in stay["detail"]
+
+
+async def test_motorcycle_parking_keeps_its_narrow_corridor(settings, cache):
+    """Zero in Greece, 11.7 per 100 km in Italy -- real, but only when close."""
+    elements = [
+        {"type": "node", "id": 1, "lat": 48.05, "lon": 11.0013,
+         "tags": {"amenity": "motorcycle_parking", "name": "Near bay"}},
+        {"type": "node", "id": 2, "lat": 48.05, "lon": 11.0094,
+         "tags": {"amenity": "motorcycle_parking", "name": "Far bay"}},
+    ]
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    names = {p["name"] for p in result["pois"]}
+    assert "Near bay" in names, "~100 m, inside the 300 m corridor"
+    assert "Far bay" not in names, "~700 m, well outside it"
+
+
+async def test_a_capped_category_still_covers_the_far_end_of_the_route(settings, cache):
+    """Truncating at the front empties the second half of the ride.
+
+    Measured on a real Greek route: 98 places to stay against a cap of 100.
+    Two more and the old behaviour would have returned only the hotels in the
+    first stretch, which reads as "nowhere to sleep after km 60" rather than as
+    a list that stopped.
+    """
+    settings.max_accommodation = 10
+    elements = [{"type": "node", "id": 300 + i, "lat": 48.0 + i * 0.01,
+                 "lon": 11.0, "tags": {"tourism": "hotel", "name": f"H{i}"}}
+                for i in range(100)]
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    stays = [p for p in result["pois"] if p["category"] == "accommodation"]
+    assert len(stays) == 10
+    # The route runs ~111 km; the last kept stay must be near its end, not at
+    # a tenth of the way along.
+    furthest = max(p["distance_along_route_m"] for p in stays)
+    assert furthest > 90_000, f"last stay at km {furthest / 1000:.0f}"
+
+
+async def test_the_app_says_which_categories_are_only_a_sample(settings, cache):
+    settings.max_accommodation = 10
+    elements = [{"type": "node", "id": 400 + i, "lat": 48.0 + i * 0.01,
+                 "lon": 11.0, "tags": {"tourism": "hotel"}} for i in range(100)]
+    elements.append({"type": "node", "id": 999, "lat": 48.5, "lon": 11.0,
+                     "tags": {"amenity": "fuel"}})
+
+    transport = httpx.MockTransport(responder({"elements": elements}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await pois.find_pois(route_fixture(), settings, client, cache)
+
+    assert result["thinned"] == {"accommodation": 100}, result["thinned"]
+    assert "fuel" not in result["thinned"], "one fuel station is not a sample"
+
+
+# --------------------------------------------- how far off the route a stop sits
+
+def _straight_route() -> list[tuple[float, float]]:
+    """A line running due east along 40N, roughly 8.5 km of it."""
+    return [(40.0, 23.0 + i * 0.01) for i in range(11)]
+
+
+def test_a_stop_carries_how_far_off_the_route_it_is():
+    """The frontend prints this on the route sheet, so it has to be in the payload.
+
+    It is the perpendicular distance to the route line -- the straight line, not
+    the ride. A node placed 300 m off can be a two-kilometre loop if there is
+    nowhere to turn, which is why nothing labels this a detour.
+    """
+    route_points = _straight_route()
+    roadside = {"type": "node", "id": 1, "lat": 40.0, "lon": 23.05,
+                "tags": {"amenity": "fuel", "name": "Roadside"}}
+    # 0.005 degrees of latitude is about 555 m north of the line.
+    up_a_lane = {"type": "node", "id": 2, "lat": 40.005, "lon": 23.05,
+                 "tags": {"amenity": "fuel", "name": "Up a lane"}}
+
+    found = pois._elements_to_pois([roadside, up_a_lane], route_points, Settings())
+    by_name = {p.name: p for p in found}
+
+    assert by_name["Roadside"].distance_off_route_m == pytest.approx(0.0, abs=5.0)
+    assert by_name["Up a lane"].distance_off_route_m == pytest.approx(555.0, rel=0.05)
+
+    # And it survives serialisation, rounded — the panel reads the dict.
+    assert by_name["Up a lane"].to_dict()["distance_off_route_m"] == pytest.approx(555, abs=2)
+
+
+def test_off_route_distance_is_measured_across_the_route_not_along_it():
+    """The two distances are independent and easy to transpose.
+
+    A stop far along the route but sitting on it must read as on the route.
+    Swapping the pair would make every distant stop look like a huge detour
+    while the numbers stayed plausible.
+    """
+    route_points = _straight_route()
+    far_along = {"type": "node", "id": 3, "lat": 40.0, "lon": 23.09,
+                 "tags": {"amenity": "fuel", "name": "Far but on it"}}
+
+    poi = pois._elements_to_pois([far_along], route_points, Settings())[0]
+
+    assert poi.distance_along_route_m > 7000, "it is near the far end of the route"
+    assert poi.distance_off_route_m == pytest.approx(0.0, abs=5.0)

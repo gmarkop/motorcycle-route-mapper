@@ -43,12 +43,45 @@ def test_garmin_route_expands_shaping_geometry(read_fixture):
 
 
 def test_garmin_route_distinguishes_via_from_shaping_points(read_fixture):
+    """This used to count Passo dello Stelvio twice.
+
+    The fixture is real Garmin shape: the summit appears as a standalone <wpt>
+    carrying its description, and again as the <rtept> that routes through it,
+    at identical coordinates. Both are correct GPX and both describe one pass,
+    so the parser now keeps one -- the <wpt>, because that is the copy with the
+    description on it.
+    """
     route = parse_route_bytes(read_fixture("garmin_route.gpx"), "garmin_route.gpx")
     kinds = [w.kind for w in route.waypoints]
 
-    assert kinds.count("via") == 2         # the two named trp:ViaPoint entries
+    assert kinds.count("waypoint") == 1    # the standalone <wpt>: the summit
+    assert kinds.count("via") == 1         # Prad; Stelvio is the <wpt> above
     assert kinds.count("shaping") == 1     # the trp:ShapingPoint
-    assert kinds.count("waypoint") == 1    # the standalone <wpt>
+
+    names = [w.name for w in route.waypoints]
+    assert names.count("Passo dello Stelvio") == 1, names
+
+
+def test_a_stop_written_as_both_a_waypoint_and_a_route_point_is_one_stop(read_fixture):
+    """Two pins on one hotel, and two identical rows to tick on import.
+
+    Planners write a stop twice on purpose: the <wpt> makes it show as a place,
+    the <rtept> makes the route go through it. Kept as two, it reached the
+    exported GPX twice, and a phone showed the same hotel, address and phone
+    number as two separate entries.
+
+    The route line is built from the <rtept> whatever happens to the waypoint
+    record, so dropping the duplicate cannot move the road -- asserted here,
+    because that is the part that would be expensive to get wrong.
+    """
+    route = parse_route_bytes(read_fixture("garmin_route.gpx"), "garmin_route.gpx")
+    before = sum(len(line) for line in route.lines)
+
+    summits = [w for w in route.waypoints if w.name == "Passo dello Stelvio"]
+
+    assert len(summits) == 1
+    assert summits[0].description == "Summit cafe, cash only", "kept the richer copy"
+    assert before > 0, "the drawn line still has its points"
 
 
 def test_standalone_waypoint_keeps_its_description_and_symbol(read_fixture):
@@ -334,3 +367,54 @@ def test_one_named_point_is_enough_to_imply_the_convention():
     route = parse_route_bytes(gpx, "mixed.gpx")
 
     assert [w.kind for w in route.waypoints] == ["via", "shaping", "shaping"]
+
+
+# ------------------------------------------------------- elevation, or the lack of it
+
+def _gpx(points: str) -> bytes:
+    return (
+        '<?xml version="1.0"?>'
+        '<gpx version="1.1" creator="t" xmlns="http://www.topografix.com/GPX/1/1">'
+        f"<trk><name>t</name><trkseg>{points}</trkseg></trk></gpx>"
+    ).encode()
+
+
+def test_a_flat_route_is_not_confused_with_a_route_that_has_no_heights():
+    """Both climb 0 m, and only one of those is an answer.
+
+    The summary used to render `stats.ascent_m ? ... : '–'`, so a genuinely
+    flat route showed the same dash as a file carrying no elevation at all --
+    0 being falsy in JavaScript. `has_elevation` is what lets the frontend
+    tell "0 m of climbing" from "I do not know", so it has to survive here.
+    """
+    flat = parse_route_bytes(_gpx(
+        '<trkpt lat="37.90" lon="23.70"><ele>12.0</ele></trkpt>'
+        '<trkpt lat="37.91" lon="23.70"><ele>12.0</ele></trkpt>'
+        '<trkpt lat="37.92" lon="23.70"><ele>12.0</ele></trkpt>'
+    ), "flat.gpx")
+    bare = parse_route_bytes(_gpx(
+        '<trkpt lat="37.90" lon="23.70"></trkpt>'
+        '<trkpt lat="37.91" lon="23.70"></trkpt>'
+        '<trkpt lat="37.92" lon="23.70"></trkpt>'
+    ), "bare.gpx")
+
+    assert flat.to_dict()["stats"]["ascent_m"] == 0
+    assert bare.to_dict()["stats"]["ascent_m"] == 0
+    assert flat.to_dict()["stats"]["has_elevation"] is True
+    assert bare.to_dict()["stats"]["has_elevation"] is False
+
+
+def test_has_elevation_is_true_when_only_some_points_carry_a_height():
+    """A partially tagged file still has something worth adding up.
+
+    Reporting it as "no elevation" would send the frontend to the terrain
+    model and throw away real recorded heights.
+    """
+    mixed = parse_route_bytes(_gpx(
+        '<trkpt lat="37.90" lon="23.70"><ele>10.0</ele></trkpt>'
+        '<trkpt lat="37.91" lon="23.70"></trkpt>'
+        '<trkpt lat="37.92" lon="23.70"><ele>90.0</ele></trkpt>'
+    ), "mixed.gpx")
+
+    assert mixed.to_dict()["stats"]["has_elevation"] is True
+    assert mixed.to_dict()["stats"]["ascent_m"] == 80

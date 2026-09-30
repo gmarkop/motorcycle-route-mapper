@@ -20,6 +20,17 @@
 # Usage:
 #   deploy/overpass/build-extract.sh [workdir]
 #   deploy/overpass/build-extract.sh --only greece,italy [workdir]
+#   deploy/overpass/build-extract.sh --sizes [--only greece,italy] [workdir]
+#   deploy/overpass/build-extract.sh --rehearse --only germany [workdir]
+#
+# --rehearse downloads and filters, reports peak memory, and stops before the
+# merge -- so a big country can be tried on a small machine without being
+# adopted into the extract that gets imported next.
+#
+# --sizes reports what the selected countries would cost to download, and stops.
+# Run it before a large build: the download is the obvious cost, but the
+# filtering step is the one that can exhaust a small box, and its appetite
+# follows the input size, not the handful of megabytes it produces.
 #
 # --only restricts the build to the named countries. Use it to prove the whole
 # pipeline on two small ones before committing to a 17 GB download; re-running
@@ -29,6 +40,22 @@
 # Needs:  osmium-tool  (sudo apt install osmium-tool), curl, ~40 GB free.
 
 set -euo pipefail
+
+SIZES_ONLY=""
+if [ "${1:-}" = "--sizes" ]; then
+  SIZES_ONLY=1
+  shift
+fi
+
+# Download and filter, report what it cost, and stop before the merge. For
+# finding out whether a big country fits on a small machine without adopting
+# it: the merge takes in every country ever filtered, so a plain run would fold
+# the rehearsal into the extract that gets imported next.
+REHEARSE=""
+if [ "${1:-}" = "--rehearse" ]; then
+  REHEARSE=1
+  shift
+fi
 
 ONLY=""
 if [ "${1:-}" = "--only" ]; then
@@ -44,9 +71,26 @@ REGION_BASE="https://download.geofabrik.de"
 COUNTRIES=(
   europe/greece
   europe/italy
+  # Slovenia is the other way out of the Venice landing. Italy borders Austria
+  # directly at Tarvisio, so it is not the only way north -- but the roads
+  # through Ljubljana and the Julian Alps are the ones worth riding, and a
+  # country you might turn into is exactly the one to have searched.
+  europe/slovenia
+  # Croatia follows Slovenia: the Istrian coast is a short hop from Ljubljana,
+  # and the Dalmatian road south is the reason anyone rides down there.
+  europe/croatia
+  # Bosnia is not optional once the Dalmatian coast is: the Neum corridor cuts
+  # the coast road in two, so Split to Dubrovnik leaves Croatia and comes back
+  # whether or not anyone planned it. Albania closes the chain at the far end.
+  #
+  # Kept in riding order, because that is what makes a gap visible: Slovenia,
+  # Croatia, Bosnia, Montenegro and Albania are what an overland run from Italy
+  # to Greece actually crosses, and the list reads as that run.
+  europe/bosnia-herzegovina
+  europe/montenegro
+  europe/albania
   europe/macedonia
   europe/serbia
-  europe/montenegro
   europe/bulgaria
   europe/romania
   # Hungary and Slovakia are not destinations, they are the way through:
@@ -63,7 +107,12 @@ COUNTRIES=(
   europe/belgium
   europe/liechtenstein
   europe/luxembourg
-  europe/france
+  # France was here to carry the Luxembourg-Switzerland leg, which needs a
+  # country in between. Germany does that too and is already in the list, so
+  # France was dropped: it is one of the largest downloads and is on neither
+  # trip otherwise. A route that does go through France still works -- the
+  # coverage polygons will place it outside the extract, and it falls back to
+  # the public servers, slower but correct rather than silently empty.
 )
 
 # Every tag this app's Overpass queries can match. Kept deliberately wider than
@@ -73,7 +122,18 @@ COUNTRIES=(
 #
 # hazards.py: highway=construction, construction, access=no, motor_vehicle=no,
 #             seasonal=yes, snowplowing=no, and barrier nodes
-# pois.py:    amenity=fuel, amenity=cafe, tourism=viewpoint
+# pois.py:    amenity=fuel, cafe, motorcycle_parking
+#             tourism=viewpoint, hotel, guest_house, camp_site, motel
+#
+# The accommodation and parking tags were chosen by tools/tag_census.py over a
+# Greek and an Italian route, not by guess. Tags that came back empty on both
+# -- motorcycle_friendly, motorcycle:theme, shop=motorcycle and its repair and
+# parts variants -- are deliberately not here: keeping a tag nobody maps costs
+# disk and import time to serve an empty panel.
+#
+# THIS LIST AND pois.CATEGORY_TAGS MUST AGREE. A tag queried but not kept here
+# returns nothing from the local server, which reads as "none along this route"
+# rather than as a missing import. tests/test_docs.py checks that they match.
 KEEP=(
   w/highway=construction
   w/construction
@@ -82,8 +142,8 @@ KEEP=(
   w/seasonal=yes
   w/snowplowing=no
   n/barrier
-  nwr/amenity=fuel,cafe
-  nwr/tourism=viewpoint
+  nwr/amenity=fuel,cafe,motorcycle_parking
+  nwr/tourism=viewpoint,hotel,guest_house,camp_site,motel
 )
 
 command -v osmium >/dev/null || { echo "osmium not found: sudo apt install osmium-tool" >&2; exit 1; }
@@ -111,14 +171,126 @@ if [ -n "$ONLY" ]; then
   echo "==> Building for ${#COUNTRIES[@]} of the configured countries: $ONLY"
 fi
 
+# What this build is about to cost, asked of Geofabrik's headers rather than
+# guessed. Worth knowing before committing a 1.9 GB box to it: the download is
+# the visible cost, but the filtering step is where the memory goes, and that
+# scales with a country's size rather than with the few megabytes it leaves.
+if [ -n "$SIZES_ONLY" ]; then
+  echo "==> Download size of ${#COUNTRIES[@]} extract(s), from Geofabrik"
+  total=0
+  unknown=0
+  for path in "${COUNTRIES[@]}"; do
+    name="${path##*/}"
+    # `|| bytes=""` matters: under `set -e` with pipefail, one unreachable
+    # country would otherwise abort the whole report instead of printing "?".
+    bytes=$(curl -fsSIL --max-time 30 "$REGION_BASE/$path-latest.osm.pbf" 2>/dev/null \
+            | tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n}') \
+            || bytes=""
+    if [ -z "$bytes" ]; then
+      printf "    %-20s      ? (could not read the header)\n" "$name"
+      unknown=$((unknown + 1))
+      continue
+    fi
+    total=$((total + bytes))
+    printf "    %-20s %7.2f GB\n" "$name" "$(echo "$bytes/1073741824" | bc -l)"
+  done
+  # A total that silently omits the countries it could not reach is worse than
+  # no total: it reads as the answer.
+  if [ "$unknown" -gt 0 ]; then
+    printf "    %-20s %7.2f GB for the %d it could reach -- %d unknown, so this is a lower bound\n" \
+           "PARTIAL" "$(echo "$total/1073741824" | bc -l)" \
+           "$((${#COUNTRIES[@]} - unknown))" "$unknown"
+  else
+    printf "    %-20s %7.2f GB to download\n" "TOTAL" \
+           "$(echo "$total/1073741824" | bc -l)"
+  fi
+  # The raw files are kept so a later run can add a country without
+  # re-downloading, so peak disk is the downloads plus the filtered copies and
+  # the merged output. The filtered copies are tiny; the raw ones are not.
+  printf "    %-20s %7.2f GB peak disk, roughly (raw kept + filtered + merged)\n" \
+         "" "$(echo "$total*1.15/1073741824" | bc -l)"
+  echo
+  echo "    Disk is the easy constraint. The filtering step holds an index of"
+  echo "    the nodes each kept way refers to, and that follows the size of the"
+  echo "    country going in, not the few megabytes coming out -- which is why"
+  echo "    a big country is worth trying on its own before a full build."
+  echo
+  echo "    Free here: $(df -h --output=avail "$WORK" | tail -1 | tr -d ' ')"
+  echo "    Nothing was downloaded."
+  exit 0
+fi
+
+# Download one country, and be sure of what landed.
+#
+# `curl -C -` on a 4 GB file is worth having, and was also the bug: it was run
+# unconditionally against a *complete* file from an earlier build. Geofabrik
+# regenerates each extract daily and it grows, so the resume asked for
+# "bytes N onward", got bytes N onward of the newer, larger file, and appended
+# them to the older file's first N bytes. The result is the right size and
+# unreadable -- "PBF error: invalid BlobHeader size". It sat undetected for
+# several builds because the filtering step was being skipped, so nothing ever
+# opened the file.
+#
+# So: resume only into a .part file, check what arrived against Geofabrik's own
+# md5, and only then put it in place. A file in raw/ is now one that has been
+# verified, which is what lets the next run skip it honestly.
+download_country() {
+  local path="$1" name="${path##*/}"
+  local target="$WORK/raw/$name.osm.pbf"
+  local part="$target.part"
+  local url="$REGION_BASE/$path-latest.osm.pbf"
+  local want have attempt
+
+  want="$(curl -fsSL --retry 2 --max-time 60 "$url.md5" 2>/dev/null \
+          | awk '{print $1}')" || want=""
+  [ -n "$want" ] || echo "    $name: no checksum published, will verify by reading it"
+
+  if [ -f "$target" ]; then
+    if [ -n "$want" ] && [ "$(md5sum "$target" | awk '{print $1}')" = "$want" ]; then
+      echo "    $name: already downloaded, checksum matches"
+      return 0
+    fi
+    echo "    $name: local copy is stale or damaged, downloading again"
+    rm -f "$target" "$part"
+  fi
+
+  for attempt in 1 2; do
+    curl -fL -C - -# --retry 3 --retry-delay 5 -o "$part" "$url"
+
+    if [ -n "$want" ]; then
+      have="$(md5sum "$part" | awk '{print $1}')"
+      if [ "$have" != "$want" ]; then
+        # Almost always a resume onto bytes from a different day's file. One
+        # retry, from nothing, rather than resuming the damage.
+        echo "    $name: checksum mismatch, discarding and starting over" >&2
+        rm -f "$part"
+        continue
+      fi
+    fi
+    # Even with a matching checksum, prove osmium can open it: the checksum
+    # says the bytes arrived, not that this build can read them.
+    #
+    # -F pbf is required, not tidiness. osmium picks its reader from the file
+    # extension, and the extension here is .part -- without it, every good
+    # download is rejected as unreadable and re-fetched forever.
+    if ! osmium fileinfo -F pbf "$part" >/dev/null 2>&1; then
+      echo "    $name: downloaded but not a readable PBF, starting over" >&2
+      rm -f "$part"
+      continue
+    fi
+    mv "$part" "$target"
+    return 0
+  done
+
+  echo "$name could not be downloaded intact after two attempts." >&2
+  echo "Check the network, then delete $WORK/raw/$name.osm.pbf* and re-run." >&2
+  return 1
+}
+
 echo "==> Downloading ${#COUNTRIES[@]} country extracts into $WORK/raw"
 for path in "${COUNTRIES[@]}"; do
   name="${path##*/}"
-  target="$WORK/raw/$name.osm.pbf"
-  # -C continues a partial download, so an interrupted run resumes rather than
-  # starting the 4 GB files again.
-  curl -fL -C - -# --retry 3 --retry-delay 5 \
-       -o "$target" "$REGION_BASE/$path-latest.osm.pbf"
+  download_country "$path"
 
   # The clipping polygon Geofabrik used to cut this extract. It is the exact
   # shape of what the country file holds, and the app needs it to know when a
@@ -128,12 +300,34 @@ for path in "${COUNTRIES[@]}"; do
        -o "$WORK/poly/$name.poly" "$REGION_BASE/$path.poly"
 done
 
+# Reusing a filtered country is what makes adding a country later cheap, but
+# the file on disk is only reusable if it was filtered with the *same* KEEP.
+# It was not, once: KEEP gained accommodation and parking tags, every country
+# reported "already filtered", and the merged extract was rebuilt from files
+# that predated the change. The result passed every test -- the tags were in
+# KEEP, and KEEP agreed with the app -- and failed only on the running server,
+# where whole countries held 17 hotels: the handful that come through
+# incidentally as members of kept relations. So the signature of KEEP is
+# stored beside each filtered file, and a change to KEEP re-filters.
+KEEP_SIG="$(printf '%s\n' "${KEEP[@]}" | sort | sha256sum | cut -c1-16)"
+
 echo "==> Filtering each country down to the tags this app queries"
+echo "    tag set $KEEP_SIG"
 for path in "${COUNTRIES[@]}"; do
   name="${path##*/}"
   src="$WORK/raw/$name.osm.pbf"
   out="$WORK/filtered/$name.osm.pbf"
-  [ -f "$out" ] && { echo "    $name: already filtered"; continue; }
+  sig="$WORK/filtered/$name.keep-sig"
+
+  if [ -f "$out" ] && [ -f "$sig" ] && [ "$(cat "$sig")" = "$KEEP_SIG" ]; then
+    echo "    $name: already filtered with this tag set"
+    continue
+  fi
+  # A filtered file with no signature predates this check, so its tag set is
+  # unknown and cannot be trusted -- re-filter rather than assume.
+  if [ -f "$out" ]; then
+    echo "    $name: filtered with a different tag set, re-filtering"
+  fi
 
   # No -R here, deliberately. osmium's -R is --omit-referenced: it *drops* the
   # nodes a kept way points at. The default keeps them, which is what we need
@@ -141,18 +335,74 @@ for path in "${COUNTRIES[@]}"; do
   # "out geom". Verified on a hand-built sample: a construction way comes
   # through with all three of its nodes, a building way and a bench node do
   # not.
-  osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
+  # Peak memory is the question a rehearsal exists to answer, and `du` does not
+  # answer it: `osmium tags-filter` holds an index of the nodes each kept way
+  # refers to, so its appetite follows the country going in, not the few
+  # megabytes coming out. Greece filtering down to 25 MB says nothing about
+  # whether Germany will filter at all on 2 GB of RAM.
+  if [ -x /usr/bin/time ]; then
+    /usr/bin/time -v -o "$WORK/filtered/$name.time" \
+      osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
+    peak_kb="$(awk -F': ' '/Maximum resident set size/ {print $2}' \
+               "$WORK/filtered/$name.time" 2>/dev/null)" || peak_kb=""
+    [ -n "$peak_kb" ] && printf "    %-14s peak memory %s MB\n" "$name" \
+      "$((peak_kb / 1024))"
+  else
+    echo "    (install the 'time' package to measure peak memory)" >&2
+    osmium tags-filter --overwrite -o "$out" "$src" "${KEEP[@]}"
+  fi
+
+  echo "$KEEP_SIG" > "$sig"
 
   before=$(du -m "$src" | cut -f1)
   after=$(du -m "$out" | cut -f1)
   printf "    %-14s %6s MB -> %5s MB\n" "$name" "$before" "$after"
 done
 
+# Merging is cheap next to filtering, but merging a stale file is exactly the
+# failure above, so refuse rather than produce a plausible-looking extract.
+for path in "${COUNTRIES[@]}"; do
+  name="${path##*/}"
+  sig="$WORK/filtered/$name.keep-sig"
+  [ -f "$sig" ] && [ "$(cat "$sig")" = "$KEEP_SIG" ] || {
+    echo "$name was not filtered with the current tag set. Refusing to merge." >&2
+    exit 1
+  }
+done
+
+if [ -n "$REHEARSE" ]; then
+  echo
+  echo "==> Rehearsal only. Nothing was merged, so the extract that gets"
+  echo "    imported is unchanged."
+  free -h 2>/dev/null | sed 's/^/      /' || true
+  echo
+  echo "    The filtered countries are kept, so a later real run reuses them."
+  echo "    If anything above looks wrong, check for an OOM kill:"
+  echo "      sudo dmesg -T | grep -i -E 'killed process|out of memory' | tail"
+  exit 0
+fi
+
 echo "==> Merging into one extract"
 # Everything filtered so far, not just this run's countries: adding a country
 # later should extend the extract rather than replace it with only the new one.
-osmium merge --overwrite -o "$WORK/touring-europe.osm.pbf" "$WORK"/filtered/*.osm.pbf
-echo "    merged $(ls -1 "$WORK"/filtered/*.osm.pbf | wc -l) countries"
+# Countries filtered by an earlier run but not selected this time are merged
+# in too, so their tag sets matter just as much. A stale one is dropped with a
+# warning rather than silently contributing: re-run without --only to refresh.
+merge_inputs=()
+for file in "$WORK"/filtered/*.osm.pbf; do
+  name="$(basename "$file" .osm.pbf)"
+  sig="$WORK/filtered/$name.keep-sig"
+  if [ -f "$sig" ] && [ "$(cat "$sig")" = "$KEEP_SIG" ]; then
+    merge_inputs+=("$file")
+  else
+    echo "    SKIPPING $name: filtered with an older tag set." >&2
+    echo "      Re-run without --only, or with --only $name, to bring it up to date." >&2
+  fi
+done
+[ ${#merge_inputs[@]} -gt 0 ] || { echo "Nothing current to merge." >&2; exit 1; }
+
+osmium merge --overwrite -o "$WORK/touring-europe.osm.pbf" "${merge_inputs[@]}"
+echo "    merged ${#merge_inputs[@]} countries"
 
 # Overpass imports bzip2-compressed OSM XML, not PBF. The Docker image expects
 # to find exactly that at /db/planet.osm.bz2, and will happily accept a PBF

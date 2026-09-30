@@ -110,13 +110,31 @@ class Settings:
     #: Spacing of elevation samples along the route. Fine enough to give the
     #: gradient through a bend, coarse enough that a long tour is a handful of
     #: requests rather than hundreds.
+    #: How much road either side of a weather sample is averaged to get the
+    #: direction of travel there. Two adjacent track points are metres apart,
+    #: where GPS jitter swamps the real heading; half a kilometre gives the
+    #: direction of the road.
+    wind_heading_window_m: float = field(
+        default_factory=lambda: _env_float("MOTO_WIND_HEADING_WINDOW_M", 500.0))
     elevation_sample_m: float = field(
         default_factory=lambda: _env_float("MOTO_ELEVATION_SAMPLE_M", 250.0))
-    #: Hard cap on samples, which is also a cap on requests: Open-Meteo takes
-    #: 100 coordinates at a time, so 600 samples is six calls however long the
-    #: route. Past this the spacing widens instead of the route being truncated.
+    #: Hard cap on samples. Past this the spacing widens rather than the route
+    #: being truncated.
+    #:
+    #: This is a rate limit, not a quality judgement. Open-Meteo's free tier
+    #: allows 600 calls a minute, and a request carrying many coordinates is
+    #: counted as though those coordinates had been fetched in a loop — so 600
+    #: samples spends the whole minute's allowance in one layer, and a route
+    #: was rate-limited on every single load. 300 leaves room for the weather
+    #: layer and for looking at a second route.
+    #:
+    #: The cost is resolution: on a 295 km route this is a height every ~1 km
+    #: rather than every ~500 m, so a short sharp ramp is smoothed away while a
+    #: mountain pass, which is what the demanding-stretches panel is for, is
+    #: not. Raise it if you self-host a terrain model and the limit stops
+    #: applying.
     max_elevation_samples: int = field(
-        default_factory=lambda: _env_int("MOTO_MAX_ELEVATION_SAMPLES", 600))
+        default_factory=lambda: _env_int("MOTO_MAX_ELEVATION_SAMPLES", 300))
     #: Curviness at or above which a stretch counts as demanding, in deg/km.
     #: 130 is where the frontend's own labels switch from "flowing" to
     #: "twisty", so the two agree rather than each having their own opinion.
@@ -181,6 +199,17 @@ class Settings:
     #: at the full per-request timeout — while the rider watched an empty panel.
     overpass_deadline_s: float = field(
         default_factory=lambda: _env_float("MOTO_OVERPASS_DEADLINE", 120.0))
+    #: The same budget when the public servers are answering, which they only
+    #: do for a route outside your own instance's coverage.
+    #:
+    #: Far larger, because the situation is different in the way that matters:
+    #: a route is looked at the evening before it is ridden, from an armchair.
+    #: Waiting three minutes for a complete answer beats getting an incomplete
+    #: one in two — the whole point of the layer is the closure you did not
+    #: know about. The short budget exists for a rider at a petrol station, and
+    #: your own server is fast enough that it never binds there.
+    overpass_public_deadline_s: float = field(
+        default_factory=lambda: _env_float("MOTO_OVERPASS_PUBLIC_DEADLINE", 600.0))
     #: Other public Overpass instances to fall back to. The main server drops
     #: connections when it is busy, and a refused connection is precisely the
     #: failure a second endpoint fixes. Comma-separated; set empty to disable.
@@ -236,7 +265,23 @@ class Settings:
     fuel_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_FUEL_CORRIDOR_M", 1000.0))
     cafe_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_CAFE_CORRIDOR_M", 300.0))
     viewpoint_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_VIEWPOINT_CORRIDOR_M", 500.0))
+    #: Somewhere to sleep is worth a detour, but deliberately no wider than
+    #: fuel: the query searches the widest corridor of all categories at once,
+    #: so a wider one here would make every POI query more expensive, and the
+    #: Alps already answer slowly.
+    accommodation_corridor_m: float = field(
+        default_factory=lambda: _env_float("MOTO_ACCOMMODATION_CORRIDOR_M", 1000.0))
+    #: Motorcycle parking is only useful where you are already stopping, so it
+    #: is worth nothing at a distance.
+    motorcycle_parking_corridor_m: float = field(
+        default_factory=lambda: _env_float("MOTO_MOTORCYCLE_PARKING_CORRIDOR_M", 300.0))
     max_pois: int = field(default_factory=lambda: _env_int("MOTO_MAX_POIS", 300))
+    #: Accommodation alone, and lower, because it is the one dense category:
+    #: the Dolomites carry 124 hotels per 100 km, so a long Alpine day would
+    #: otherwise return several hundred places to sleep -- more than anyone
+    #: reads, and enough to make the payload the slow part.
+    max_accommodation: int = field(
+        default_factory=lambda: _env_int("MOTO_MAX_ACCOMMODATION", 100))
 
     #: Usable tank range in km. Bikes carry far less fuel than cars, which is
     #: why this app plans around it and a car navigation app does not.
@@ -273,7 +318,30 @@ class Settings:
     # --- hazards -------------------------------------------------------------
     #: How far from the route a closure may be and still count as "on my way".
     hazard_corridor_m: float = field(default_factory=lambda: _env_float("MOTO_HAZARD_CORRIDOR_M", 150.0))
+    #: How close a closure has to run to count as being *on* the route rather
+    #: than near it. Deliberately tighter than the corridor searched: the
+    #: search has to be generous, because the query line is simplified and a
+    #: recorded track wanders, but what gets shown should be the road you are
+    #: actually riding. Raise it if closures you care about are being filed as
+    #: nearby; the panel says how many those are, so it is never a silent drop.
+    hazard_on_route_m: float = field(
+        default_factory=lambda: _env_float("MOTO_HAZARD_ON_ROUTE_M", 60.0))
     max_hazards: int = field(default_factory=lambda: _env_int("MOTO_MAX_HAZARDS", 200))
+
+    def poi_limit(self, category: str) -> int:
+        """How many of one category to keep -- never a shared budget.
+
+        A single cap across all categories let a dense one crowd out a sparse
+        one: measured, the Dolomites carry 124 hotels per 100 km against 11.7
+        fuel stations, so a 600 km Alpine day would spend a 300-place budget on
+        accommodation inside the first 200 km and drop every fuel stop after
+        it. The fuel stops are what `plan_fuel_stops` reads, so that would not
+        have shown up as a short list -- it would have invented a 400 km fuel
+        gap that does not exist.
+        """
+        if category == "accommodation":
+            return self.max_accommodation
+        return self.max_pois
 
     @property
     def overpass_endpoints(self) -> list[str]:
@@ -284,6 +352,17 @@ class Settings:
                 endpoints.append(url)
         return endpoints
 
+    def deadline_for(self, endpoints: Sequence[str]) -> float:
+        """How long a layer may spend, given which servers will answer it."""
+        if self._is_own_server(endpoints):
+            return self.overpass_deadline_s
+        return self.overpass_public_deadline_s
+
+    def _is_own_server(self, endpoints: Sequence[str]) -> bool:
+        local_configured = bool(self.overpass_coverage_files or self.overpass_coverage)
+        return bool(local_configured and endpoints
+                    and endpoints[0] == self.overpass_url)
+
     def concurrency_for(self, endpoints: Sequence[str]) -> int:
         """How many queries at once, given which servers are about to answer.
 
@@ -291,8 +370,7 @@ class Settings:
         area says so — otherwise the primary *is* a public server and gets the
         public allowance.
         """
-        local_configured = bool(self.overpass_coverage_files or self.overpass_coverage)
-        if local_configured and endpoints and endpoints[0] == self.overpass_url:
+        if self._is_own_server(endpoints):
             return self.overpass_local_concurrency
         return self.overpass_concurrency
 

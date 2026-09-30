@@ -421,7 +421,8 @@ async def test_every_chunk_failing_is_still_a_failure(settings):
 async def test_a_layer_stops_when_its_budget_is_spent(monkeypatch):
     """One stubborn chunk spent 311s — three attempts at the full timeout —
     while the rider watched an empty panel. The budget caps the whole layer."""
-    settings = Settings(overpass_concurrency=1, overpass_deadline_s=60.0)
+    settings = Settings(overpass_concurrency=1, overpass_deadline_s=60.0,
+                        overpass_public_deadline_s=60.0)
     chunks = [[(38.0, 22.0)], [(38.1, 22.0)], [(38.2, 22.0)]]
     served = []
     clock = {"now": 1000.0}
@@ -562,7 +563,7 @@ async def test_a_narrow_semaphore_shares_the_budget_between_chunks():
     the time the others were queueing for.
     """
     settings = Settings(overpass_concurrency=1, overpass_deadline_s=120.0,
-                        overpass_timeout_s=90)
+                        overpass_public_deadline_s=120.0, overpass_timeout_s=90)
     chunks = [[(38.0 + i / 10, 22.0)] for i in range(4)]
     seen: list[float] = []
 
@@ -581,7 +582,7 @@ async def test_a_narrow_semaphore_shares_the_budget_between_chunks():
 async def test_a_wide_semaphore_gives_each_chunk_the_whole_budget():
     """With a slot per chunk nothing is queueing, so nothing needs rationing."""
     settings = Settings(overpass_concurrency=4, overpass_deadline_s=120.0,
-                        overpass_timeout_s=90)
+                        overpass_public_deadline_s=120.0, overpass_timeout_s=90)
     chunks = [[(38.0 + i / 10, 22.0)] for i in range(4)]
     seen: list[float] = []
 
@@ -805,3 +806,36 @@ async def test_a_refused_connection_gives_advice_that_fits_the_server(url, expec
             await overpass.run_query("q", settings, client, attempts=1)
 
     assert expect in str(caught.value)
+
+
+# ------------------------------------------------- patience follows the server
+
+def test_a_covered_route_uses_the_short_budget(monkeypatch, poly_file):
+    """Your own server is fast; if it has not answered in two minutes it is
+    not going to."""
+    settings = _local(monkeypatch, poly_file)
+    assert settings.deadline_for(settings.endpoints_for(ATHENS)) == \
+        settings.overpass_deadline_s
+
+
+def test_a_fallback_route_is_given_much_longer(monkeypatch, poly_file):
+    """The public servers are slow, and the situation is different.
+
+    A route outside the local coverage is one being planned the evening before
+    it is ridden. Waiting three minutes for a complete answer beats getting an
+    incomplete one in two — an unshown closure is the failure that matters.
+    """
+    settings = _local(monkeypatch, poly_file)
+    public = settings.deadline_for(settings.endpoints_for(TIRANA))
+
+    assert public == settings.overpass_public_deadline_s
+    assert public > settings.overpass_deadline_s
+
+
+def test_without_a_local_server_the_patient_budget_applies(monkeypatch):
+    """No coverage means the primary is a public server, whatever its URL."""
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE_FILES", raising=False)
+    monkeypatch.delenv("MOTO_OVERPASS_COVERAGE", raising=False)
+    settings = Settings()
+    assert settings.deadline_for(settings.overpass_endpoints) == \
+        settings.overpass_public_deadline_s

@@ -56,6 +56,10 @@ sample gets an arrival time from your departure and average speed, and the
 forecast is read *at that hour*. Knowing it will rain in Cortina is useless;
 knowing it will rain in Cortina at 14:00, when you get there, is the point.
 
+The forecast reaches 16 days. Plan a ride further out than that and the panel
+says so, and names the date its window will reach your departure — "no
+forecast" on its own reads like a fault, and this is not one.
+
 **Scores conditions for two wheels, not four.** Each sample gets a *rideability*
 score from 0 to 100 with the reasons spelled out. The weighting is deliberately
 motorcycle-shaped: ice outranks everything, then thunderstorms and gusts, then
@@ -103,9 +107,31 @@ phone in the rain.
 
 **Writes the whole lot back out as GPX.** The findings are no use stuck on the
 laptop while you ride off with the original file. The export folds the weather
-warnings, closures and planned fuel stops back in as ordinary waypoints with
-Garmin symbol names, so the device shows them as proper icons and no device
-needs to understand anything specific to this app.
+warnings, closures, fuel, viewpoints, hotels, parking and the twisty-and-steep
+stretches back in as ordinary waypoints with Garmin symbol names, so the device
+shows them as proper icons and no device needs to understand anything specific
+to this app.
+
+Planned refuelling stops are numbered in riding order — "Fuel stop 2" is the
+plan's second stop, not the second pump you pass — and every other station
+still ships, because the thing that goes wrong on the road is a planned stop
+being shut. GPX has no colour for a waypoint (it is not in the 1.1 schema, and
+Garmin's waypoint extension does not add one), so the symbol carries the
+category and the name carries the meaning: a demanding stretch arrives as
+"Twisty & steep: 3.2 km down" with the gradient in its description.
+
+**Download enriched GPX** asks what belongs on the device first, the way the
+print dialog asks what belongs on the page. Planned fuel stops and every other
+station are separate ticks, because a 450 km route carries a hundred pumps and
+wanting the plan is not the same as wanting all of them. Cafes are selectable
+but off: a GPX has nowhere to put the opening hours that would make one worth
+choosing.
+
+Some navigation apps — Scenic among them — take the waypoints in a file that
+also holds a track to be the route's via points, because that is the shape of
+a Garmin route file, and show them numbered rather than named. **Download
+stops only** writes the same waypoints with no track in the file, so there is
+nothing for them to attach to; import it alongside the route.
 
 Plus an elevation profile you can hover to see where you are on the map, and a
 [Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
@@ -200,7 +226,7 @@ moto_route/
 │   ├── cache.py       TTL cache, memory then disk
 │   ├── weather.py     Open-Meteo + the rideability score
 │   ├── hazards.py     Overpass closures within a corridor of the route
-│   ├── pois.py        Fuel, coffee, viewpoints + tank-range planning
+│   ├── pois.py        Fuel, coffee, views, stays, parking + tank-range planning
 │   ├── incidents.py   Road-authority feeds behind a provider interface
 │   └── alternates.py  OSRM alternates, ranked by corners
 └── static/
@@ -310,7 +336,7 @@ Useful if you want to script it or build your own frontend.
 | `GET` | `/api/routes/{id}/incidents` | Live road-authority incidents |
 | `GET` | `/api/routes/{id}/curviness` | `?window_m=<n>` — curviness sampled along the route |
 | `GET` | `/api/routes/{id}/elevation` | Distance/elevation pairs for the profile |
-| `GET` | `/api/routes/{id}/export.gpx` | The enriched ride as a downloadable GPX |
+| `GET` | `/api/routes/{id}/export.gpx` | `?parts=all\|route\|stops&include=<categories>` — the enriched ride as a downloadable GPX |
 
 Interactive documentation is generated at <http://127.0.0.1:8000/docs>.
 
@@ -335,13 +361,15 @@ All optional, all environment variables.
 | `MOTO_WEATHER_INTERVAL_M` | `25000` | Distance between weather samples |
 | `MOTO_MAX_WEATHER_SAMPLES` | `24` | Cap on forecast points per route |
 | `MOTO_HAZARD_CORRIDOR_M` | `150` | How far off-route a closure still counts |
+| `MOTO_HAZARD_ON_ROUTE_M` | `60` | How close a closure must run to count as being *on* the route rather than near it. The corridor above is what gets searched — deliberately generous, since the query line is simplified and a recorded track wanders — while this decides what gets shown. Anything filtered out is counted in the panel, never silently dropped |
 | `MOTO_SIMPLIFY_M` | `15` | Drawing simplification tolerance |
 | `MOTO_TIMEOUT` | `20` | HTTP timeout, seconds |
 | `MOTO_OVERPASS_CONCURRENCY` | `2` | Queries in flight against the **public** servers — their documented per-IP allowance; drop to `1` if rate-limited |
 | `MOTO_OVERPASS_LOCAL_CONCURRENCY` | `8` | Queries in flight against **your own** Overpass, used only for routes inside its coverage |
 | `MOTO_OVERPASS_TIMEOUT` | `90` | Seconds Overpass may spend on a query; also sets the HTTP wait |
 | `MOTO_OVERPASS_MAX_POINTS` | `60` | Route coordinates per query; longer routes are split into several |
-| `MOTO_OVERPASS_DEADLINE` | `120` | Total seconds one layer may spend on Overpass before returning what it has |
+| `MOTO_OVERPASS_DEADLINE` | `120` | Seconds one layer may spend on **your own** Overpass before returning what it has |
+| `MOTO_OVERPASS_PUBLIC_DEADLINE` | `600` | The same for the public servers — far longer, because a route is planned the evening before, not mid-ride |
 | `MOTO_OVERPASS_QUERY_STYLE` | `filtered` | `filtered` (tag-indexed, 8 passes) or `grouped` (2 passes, large intermediate set) |
 | `MOTO_OVERPASS_FALLBACK_URLS` | one mirror | Other Overpass instances to rotate through; empty disables |
 | `MOTO_OVERPASS_COVERAGE_FILES` | unset | Geofabrik `.poly` boundaries your own Overpass holds; routes outside them use the public servers |
@@ -351,6 +379,8 @@ All optional, all environment variables.
 | `MOTO_FUEL_CORRIDOR_M` | `1000` | How far off-route a fuel station still counts |
 | `MOTO_CAFE_CORRIDOR_M` | `300` | Same, for cafes |
 | `MOTO_VIEWPOINT_CORRIDOR_M` | `500` | Same, for viewpoints |
+| `MOTO_ACCOMMODATION_CORRIDOR_M` | `1000` | Same, for places to stay. Deliberately no wider than fuel: every category is queried at the widest corridor, so raising this makes every POI query more expensive |
+| `MOTO_MOTORCYCLE_PARKING_CORRIDOR_M` | `300` | Same, for motorcycle parking, which is only useful where you already are |
 | `MOTO_MAX_CACHED_TILES` | `250` | Offline tile cap — the OSM policy limit |
 | `MOTO_TILE_DELAY_MS` | `120` | Pause between prefetch requests |
 | `MOTO_INCIDENT_FEEDS` | — | Comma-separated GeoJSON incident feed URLs |
@@ -363,14 +393,16 @@ All optional, all environment variables.
 | `MOTO_INCIDENT_TTL` | `600` | Incident cache lifetime, seconds |
 | `MOTO_ELEVATION_URL` | Open-Meteo | Terrain model used when the GPX carries no heights |
 | `MOTO_ELEVATION_TTL` | `2592000` | Elevation cache lifetime, seconds — terrain does not move |
+| `MOTO_WIND_HEADING_WINDOW_M` | `500` | Road either side of a weather sample averaged to get the direction of travel, for crosswind |
 | `MOTO_ELEVATION_SAMPLE_M` | `250` | Spacing of elevation samples along the route |
-| `MOTO_MAX_ELEVATION_SAMPLES` | `600` | Cap on samples, and so on requests (100 coordinates each) |
+| `MOTO_MAX_ELEVATION_SAMPLES` | `300` | Cap on samples. Open-Meteo counts coordinates, not requests, and allows 600 a minute |
 | `MOTO_DEMANDING_CURVINESS` | `130` | deg/km at which a stretch counts as twisty |
 | `MOTO_DEMANDING_GRADIENT` | `5` | Percent gradient at which a stretch counts as steep |
 | `MOTO_DEMANDING_MIN_M` | `300` | How long twisty-and-steep must hold to be worth flagging |
 | `MOTO_PARTIAL_TTL` | `300` | Cache lifetime for an answer missing sections, so Refresh retries them |
 | `MOTO_MAX_HAZARDS` | `200` | Cap on OSM closures returned |
-| `MOTO_MAX_POIS` | `300` | Cap on fuel/cafe/viewpoint results |
+| `MOTO_MAX_POIS` | `300` | Cap per category, not shared between them — a dense category must not be able to crowd out the fuel stops the range planner reads |
+| `MOTO_MAX_ACCOMMODATION` | `100` | Cap for places to stay alone, which is the one dense category (124 hotels per 100 km in the Dolomites) |
 
 Cache lifetimes (`MOTO_WEATHER_TTL`, `MOTO_HAZARD_TTL`, `MOTO_ROUTING_TTL`) and
 the upload limit (`MOTO_MAX_UPLOAD`) round out the set; `config.py` is the
@@ -382,33 +414,37 @@ To run it as a service on a home server, see **[DEPLOY.md](DEPLOY.md)**.
 
 ## Where to take it next
 
-The first five ideas that were listed here are now built. What is left:
+Deployment, licensing, the curviness map, the elevation profile, the printable
+route sheet and the offline tile cache have all since been built — see
+[`DEPLOY.md`](DEPLOY.md) to put it on a home server. What is still open:
 
-1. **`DEPLOY.md` and a systemd unit**, so it survives a reboot on a home server.
-   Bind to loopback and put Tailscale in front: that gives a real certificate
-   (so the tile cache works) and keeps an app with no authentication off the
-   public internet.
-2. **A LICENSE file** — without one, "public repo" legally means look, don't
-   touch. MIT or Apache-2.0 if you want others to use it.
-3. **More incident providers** — several European countries publish open feeds.
+1. **Verify the Autobahn provider** against the live API. It was written from
+   the documented shape of the API and is covered by tests using recorded
+   fixtures, but it has never seen real data — the build environment has no
+   outbound network. `tools/verify_autobahn.py` exists to do this from a
+   machine with a connection; until someone runs it, the mapping is an
+   educated guess.
+2. **More incident providers** — several European countries publish open feeds.
    Each is one small class implementing `IncidentProvider`; the generic GeoJSON
    adapter may already handle yours with nothing but a URL.
-4. **Verify the Autobahn provider** against the live API and adjust the mapping
-   if the real payloads differ from the documented shape.
-5. **Multi-day tours** — split a long route into days with overnight stops, and
+3. **Multi-day tours** — split a long route into days with overnight stops, and
    forecast each day from its own departure time rather than one continuous ride.
-6. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
+4. **Ferry and toll awareness** — OSM tags both; a ferry timetable you miss by
    ten minutes costs more than any weather.
-7. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
+5. **Rider-tuned scoring** — the rideability weights in `services/weather.py` are
    one opinion. Someone on a faired tourer with heated grips should weight cold
    and rain far lower than someone on a naked bike.
+6. **A true riding detour for stops** — the panel reports how far off the route
+   a fuel station or cafe sits, but that is the straight line to it. With no
+   junction nearby the ride there can be several times longer. Solving
+   route → stop → route through OSRM would turn an indication into a number.
 
 ---
 
 ## A note on the tests
 
-173 of them, and they run offline in about ten seconds. Two patterns are worth
-copying:
+Around 390 of them, and they run offline in about fifteen seconds. Two
+patterns are worth copying:
 
 **HTTP is mocked at the transport, not the function.** Every service test uses
 `httpx.MockTransport`, so the real request-building, status handling and JSON

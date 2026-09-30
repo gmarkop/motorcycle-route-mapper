@@ -13,9 +13,22 @@
  * service worker is worse than an honest "could not refresh".
  */
 
-const VERSION = 'v1';
+// Replaced by the server with a digest of the shell assets themselves, so a
+// deploy produces a new cache name and the stale one is dropped on activate.
+// It was a hardcoded 'v1' for the life of the project, which meant every
+// deploy needed two reloads before it was visible: the shell is served
+// stale-while-revalidate, so the first reload rendered the old CSS and merely
+// fetched the new one for next time. Nothing said so, and a layout change
+// looked like a deploy that had not happened.
+const VERSION = '__SHELL_VERSION__';
 const SHELL_CACHE = `moto-shell-${VERSION}`;
-const TILE_CACHE = `moto-tiles-${VERSION}`;
+
+// Deliberately NOT versioned. These are map tiles the rider downloaded for a
+// route with no signal, and `activate` deletes every moto- cache that is not
+// the current one -- so versioning this name would throw away the offline map
+// on every deploy. The name is kept exactly as first shipped so existing
+// caches survive this change too.
+const TILE_CACHE = 'moto-tiles-v1';
 
 const SHELL_ASSETS = [
   '/',

@@ -330,18 +330,19 @@ async def run_chunked(
     old behaviour exactly; at a width of four with four chunks it is the whole
     budget, because nothing is waiting behind them.
     """
-    budget = settings.overpass_deadline_s if deadline_s is None else deadline_s
-    deadline = time.monotonic() + budget if budget else None
-
     # Decided once for the layer from every point it will search, not per
     # chunk and not from a bounding box: a route that leaves a self-hosted
     # instance's coverage must not have half its chunks answered from a
     # database that has never heard of the other half.
     #
-    # The width follows that choice, and must be settled before the allowance
-    # below, which divides the budget by how many turns the width forces.
+    # The width and the budget both follow that choice, and must be settled
+    # before the allowance below, which divides the budget by how many turns
+    # the width forces.
     endpoints = settings.endpoints_for(coverage_points)
     limit = settings.concurrency_for(endpoints)
+
+    budget = settings.deadline_for(endpoints) if deadline_s is None else deadline_s
+    deadline = time.monotonic() + budget if budget else None
 
     # How many turns the semaphore forces these chunks to take.
     rounds = math.ceil(len(chunks) / max(1, limit))

@@ -32,6 +32,17 @@ from .overpass import (OverpassError, chunk_coordinates, query_header,
 log = logging.getLogger(__name__)
 
 
+def _corridors(settings: Settings) -> dict[str, float]:
+    """The corridor each category is worth a detour for."""
+    return {
+        "fuel": settings.fuel_corridor_m,
+        "cafe": settings.cafe_corridor_m,
+        "viewpoint": settings.viewpoint_corridor_m,
+        "accommodation": settings.accommodation_corridor_m,
+        "motorcycle_parking": settings.motorcycle_parking_corridor_m,
+    }
+
+
 
 @dataclass(slots=True)
 class Poi:
@@ -87,16 +98,24 @@ def build_query(coords: Sequence[geo.LatLon], settings: Settings) -> str:
     the real route anyway.
     """
     joined = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in coords)
-    widest = max(settings.fuel_corridor_m, settings.cafe_corridor_m,
-                 settings.viewpoint_corridor_m)
+    widest = max(_corridors(settings).values())
     around = f"around:{int(widest)},{joined}"
+
+    # One statement per tag key, not per category: the coordinate list is
+    # repeated verbatim in each, so a statement per category would have sent
+    # the same corridor five times for no extra data.
+    keys: dict[str, list[str]] = {}
+    for key, values in CATEGORY_TAGS.values():
+        keys.setdefault(key, []).extend(values)
+    statements = "\n".join(
+        f'  nwr({around})["{key}"~"^({"|".join(values)})$"];'
+        for key, values in keys.items())
 
     return f"""{query_header(settings)}
 (
-  nwr({around})["amenity"~"^(fuel|cafe)$"];
-  nwr({around})["tourism"="viewpoint"];
+{statements}
 );
-out center {settings.max_pois};
+out center {settings.max_pois * len(CATEGORY_TAGS)};
 """
 
 
@@ -138,6 +157,8 @@ async def find_pois(
                       settings.partial_ttl_s if cached.get("partial")
                       else settings.hazard_ttl_s)
 
+    all_pois = _elements_to_pois(cached.get("elements", []), route_points,
+                                 settings, cap=False)
     pois = _elements_to_pois(cached.get("elements", []), route_points, settings)
 
     # Range planning runs over the fuel stops only, in route order.
@@ -157,7 +178,18 @@ async def find_pois(
         "pois": [p.to_dict() for p in pois],
         "counts": {
             category: sum(1 for p in pois if p.category == category)
-            for category in ("fuel", "cafe", "viewpoint")
+            for category in CATEGORIES
+        },
+        # Which categories are a sample rather than everything there is. A
+        # thinned list that does not say so is a quiet lie about the route:
+        # nothing distinguishes "these are all the hotels" from "these are a
+        # hundred of them", and a rider planning a night stop deserves to know
+        # which they are looking at.
+        "thinned": {
+            category: found
+            for category in CATEGORIES
+            if (found := sum(1 for p in all_pois if p.category == category))
+            > settings.poi_limit(category)
         },
         "fuel_plan": plan.to_dict(),
         "partial": bool(cached.get("partial")),
@@ -256,13 +288,13 @@ def _elements_to_pois(
     elements: Sequence[dict[str, Any]],
     route_points: Sequence[geo.LatLon],
     settings: Settings,
+    cap: bool = True,
 ) -> list[Poi]:
-    cumulative = geo.cumulative_distances(route_points)
-    corridor = {
-        "fuel": settings.fuel_corridor_m,
-        "cafe": settings.cafe_corridor_m,
-        "viewpoint": settings.viewpoint_corridor_m,
-    }
+    corridor = _corridors(settings)
+    widest = max(corridor.values())
+    # Reach covers the widest corridor and the 1.5x slack applied below, so a
+    # point the filter would keep is never reported as out of reach.
+    index = geo.RouteIndex(route_points, widest * 2)
 
     pois: list[Poi] = []
     for element in elements:
@@ -275,7 +307,7 @@ def _elements_to_pois(
         if position is None:
             continue
 
-        off_route, along_route = geo.project_onto_polyline(position, route_points, cumulative)
+        off_route, along_route = index.project(position)
         # Overpass measured against the simplified query line; re-check against
         # the real one, with slack for the simplification itself.
         if off_route > corridor[category] * 1.5:
@@ -294,7 +326,32 @@ def _elements_to_pois(
         ))
 
     pois.sort(key=lambda p: p.distance_along_route_m)
-    return pois[: settings.max_pois]
+    if not cap:
+        return pois
+
+    # Capped per category, never as one shared budget. Accommodation is dense
+    # enough (124 / 100 km in the Dolomites) that a shared cap would be spent
+    # on hotels within the first part of a long route, dropping the later fuel
+    # stops -- and `plan_fuel_stops` reads that list, so the result would have
+    # been a fuel gap the app invented rather than a short list anyone noticed.
+    #
+    # And thinned across the route rather than truncated at the front. The list
+    # is in route order, so keeping the first N empties everything past a
+    # certain kilometre. Measured on a real Greek route: 98 places to stay
+    # against a cap of 100. Two more and the far half of the ride would have
+    # shown none, which reads as open country rather than as a list that
+    # stopped. Every Nth keeps the end of the route represented -- the half you
+    # are furthest from home in, and the half you are looking for a bed in.
+    kept: list[Poi] = []
+    for category in CATEGORY_TAGS:
+        found = [p for p in pois if p.category == category]
+        limit = settings.poi_limit(category)
+        if len(found) > limit:
+            step = len(found) / limit
+            found = [found[int(i * step)] for i in range(limit)]
+        kept.extend(found)
+    kept.sort(key=lambda p: p.distance_along_route_m)
+    return kept
 
 
 def _element_position(element: dict[str, Any]) -> geo.LatLon | None:
@@ -307,18 +364,39 @@ def _element_position(element: dict[str, Any]) -> geo.LatLon | None:
     return None
 
 
+#: The categories, and the tags each is built from. Chosen by census over two
+#: real routes rather than by guess -- `tools/tag_census.py` counted every
+#: candidate along a Greek and an Italian route, and the ones that came back
+#: empty in both (motorcycle_friendly, motorcycle:theme, shop=motorcycle and
+#: its repair and parts variants) are deliberately absent. A category nobody
+#: maps is an empty panel.
+CATEGORY_TAGS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "fuel": ("amenity", ("fuel",)),
+    "cafe": ("amenity", ("cafe",)),
+    "viewpoint": ("tourism", ("viewpoint",)),
+    # Greece 8.8 / 100 km, Italy 138 / 100 km. Camp sites and motels scored
+    # low on both routes but ride along in the same selector for nothing, and
+    # both are common further north -- the June 2027 route crosses Poland.
+    "accommodation": ("tourism", ("hotel", "guest_house", "camp_site", "motel")),
+    # Zero in Greece, 11.7 / 100 km in Italy. One country would have been
+    # enough to reject this wrongly, which is why two were measured.
+    "motorcycle_parking": ("amenity", ("motorcycle_parking",)),
+}
+
+CATEGORIES = tuple(CATEGORY_TAGS)
+
+
 def _categorise(tags: dict[str, str]) -> str | None:
-    if tags.get("amenity") == "fuel":
-        return "fuel"
-    if tags.get("amenity") == "cafe":
-        return "cafe"
-    if tags.get("tourism") == "viewpoint":
-        return "viewpoint"
+    for category, (key, values) in CATEGORY_TAGS.items():
+        if tags.get(key) in values:
+            return category
     return None
 
 
 def _default_name(category: str) -> str:
-    return {"fuel": "Fuel station", "cafe": "Cafe", "viewpoint": "Viewpoint"}[category]
+    return {"fuel": "Fuel station", "cafe": "Cafe", "viewpoint": "Viewpoint",
+            "accommodation": "Place to stay",
+            "motorcycle_parking": "Motorcycle parking"}[category]
 
 
 def _describe(tags: dict[str, str], category: str) -> str:
@@ -328,6 +406,11 @@ def _describe(tags: dict[str, str], category: str) -> str:
                        "fuel:diesel", "payment:cash", "self_service")
     elif category == "cafe":
         interesting = ("cuisine", "opening_hours", "outdoor_seating", "internet_access")
+    elif category == "accommodation":
+        # `tourism` itself, so a camp site is not silently shown as a hotel.
+        interesting = ("tourism", "stars", "phone", "internet_access", "website")
+    elif category == "motorcycle_parking":
+        interesting = ("capacity", "covered", "fee", "surface")
     else:
         interesting = ("ele", "direction", "description")
     parts = [f"{key.split(':')[-1]}: {tags[key]}" for key in interesting if tags.get(key)]

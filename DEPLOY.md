@@ -484,6 +484,9 @@ never ask.
 sudo apt install osmium-tool
 sudo mkdir -p /var/lib/overpass-build && sudo chown "$USER" /var/lib/overpass-build
 
+# What it would cost, before committing to it. Downloads nothing.
+deploy/overpass/build-extract.sh --sizes /var/lib/overpass-build
+
 # Prove the pipeline on two countries first — half an hour, not half a day.
 deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
 
@@ -491,6 +494,131 @@ deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
 # merged extract is rebuilt from everything present, not just the new ones.
 deploy/overpass/build-extract.sh /var/lib/overpass-build
 ```
+
+If a build stops with `PBF error: invalid BlobHeader size`, a raw download is
+damaged. The script now detects that against Geofabrik's checksum and fetches
+it again by itself; if you want to force it, delete the file under `raw/` and
+re-run.
+
+### Trying a big country before committing to one
+
+```bash
+sudo apt install time                    # for the peak-memory measurement
+deploy/overpass/build-extract.sh --sizes --only germany /var/lib/overpass-build
+deploy/overpass/build-extract.sh --rehearse --only germany /var/lib/overpass-build
+```
+
+`--rehearse` downloads and filters, reports the peak memory the filter actually
+used, and stops before the merge -- so the trial does not end up in the extract
+imported next.
+
+Peak memory is the number that matters and the one nothing else reveals.
+`osmium tags-filter` holds an index of the nodes each kept way refers to, so
+what it needs follows the size of the country going *in*, not the handful of
+megabytes coming out: Greece filtering down to 25 MB says nothing about whether
+Germany will filter at all. If the run dies, `sudo dmesg -T | grep -i 'killed
+process'` will say so; a swapfile is the usual remedy.
+
+Filtered countries are kept, so a later real run reuses the work.
+
+### Re-importing after a rebuild
+
+The whole sequence, in order. Every step has silently not happened at least
+once here, so each one has a check that fails loudly rather than a result you
+have to squint at.
+
+```bash
+# 1. Rebuild. Expect "re-filtering" if KEEP changed, or "stale or damaged" if
+#    a raw download needs replacing. "already filtered with this tag set" for
+#    every country means nothing was rebuilt.
+deploy/overpass/build-extract.sh --only greece,italy /var/lib/overpass-build
+
+# 2. Check the extract before importing it, not after. This is the last point
+#    where a problem is cheap.
+osmium fileinfo /var/lib/overpass-build/touring-europe.osm.bz2
+ls -lh /var/lib/overpass-build/touring-europe.osm.bz2
+
+# 3. Stop the old instance and empty the database. OVERPASS_MODE=init will not
+#    overwrite a database directory that still has anything in it, and it does
+#    not say so -- it just serves the old data.
+sudo docker rm -f overpass
+sudo rm -rf /var/lib/overpass-db/*
+
+# 4. Import (the same command as the first time).
+sudo docker run -d --restart unless-stopped \
+  -e OVERPASS_MODE=init \
+  -e OVERPASS_META=no \
+  -e OVERPASS_PLANET_URL=file:///data/touring-europe.osm.bz2 \
+  -e OVERPASS_RULES_LOAD=10 \
+  -v /var/lib/overpass-db:/db \
+  -v /var/lib/overpass-build:/data:ro \
+  -p 127.0.0.1:12345:80 \
+  --name overpass wiktorn/overpass-api
+
+# 5. Wait. The logs stop at the curl progress bar that copies the extract into
+#    the container, and then say nothing for the whole import -- it looks
+#    frozen exactly while it is working. Do not judge it by the logs.
+#
+#    `dispatcher` is the query daemon and runs for the life of the container,
+#    so it is never a sign of anything. `update_database` is the import, and
+#    its absence is what finished looks like.
+sudo docker top overpass | grep -c update_database     # 1 = still importing
+sudo du -sh /var/lib/overpass-db                       # should keep growing
+
+#    Waiting for it to ANSWER is the wrong test, and a tempting one. The
+#    dispatcher accepts queries well before the import has finished, so
+#    Overpass says 200 to a half-loaded database -- the same shape of wrong
+#    answer as an empty extract or a route outside coverage. Wait for the
+#    importer to leave instead:
+while sudo docker top overpass | grep -q update_database; do
+  echo "$(date +%T) importing, db now $(sudo du -sh /var/lib/overpass-db | cut -f1)"
+  sleep 30
+done
+echo "Import finished."
+
+#    Then confirm it has settled: two readings a minute apart, same size.
+sudo du -sh /var/lib/overpass-db; sleep 60; sudo du -sh /var/lib/overpass-db
+
+# 6. Ask it directly for something the old extract did not have. A number
+#    here is the first real evidence the import did anything.
+curl -s -X POST http://127.0.0.1:12345/api/interpreter \
+  --data-urlencode 'data=[out:json];nwr(37.9,23.6,38.1,23.8)["tourism"="hotel"];out count;'
+
+# 7. Drop the cached answers that came from Overpass. POI results live for six
+#    hours, so a route loaded before the import replays the old empty result
+#    and makes a good rebuild look like a failed one.
+#
+#    Only these two. The cache is one directory per service, and the others
+#    have nothing to do with the extract: clearing `elevation` in particular
+#    forces every height to be fetched from Open-Meteo again, whose rate limit
+#    is weighted by coordinate and has already cost this app a wave of 429s.
+#    The app recreates the directories at startup, so removing them is fine.
+sudo rm -rf /var/lib/moto-route/pois /var/lib/moto-route/hazards
+
+# 8. Restart the app. `enable --now` does not restart a running unit; this has
+#    cost a day here before.
+sudo systemctl restart moto-route
+systemctl show -p MainPID --value moto-route
+
+# 9. The verdict. Thirteen lines, all ok, exit 0.
+/opt/moto-route/.venv/bin/python tools/check_extract.py
+```
+
+Step 9 is the one that decides. The absence of an error message in steps 1-8
+has meant nothing at least three times.
+
+**After the import, verify it before trusting a route:**
+
+```bash
+python tools/check_extract.py
+```
+
+It counts every tag the app queries against your own server. A tag the app
+asks for but the extract never kept comes back empty, and empty is
+indistinguishable from "none along this route" — which is precisely how a
+missing import stays hidden until you are looking at a map with no fuel on it.
+Building, importing and restarting are three separate steps, and each has
+silently not happened at least once here.
 
 Take the first line seriously. A 17 GB download followed by an import is a long
 way to travel before finding out that a step does not work on your box; two
