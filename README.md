@@ -56,6 +56,10 @@ sample gets an arrival time from your departure and average speed, and the
 forecast is read *at that hour*. Knowing it will rain in Cortina is useless;
 knowing it will rain in Cortina at 14:00, when you get there, is the point.
 
+The forecast reaches 16 days. Plan a ride further out than that and the panel
+says so, and names the date its window will reach your departure — "no
+forecast" on its own reads like a fault, and this is not one.
+
 **Scores conditions for two wheels, not four.** Each sample gets a *rideability*
 score from 0 to 100 with the reasons spelled out. The weighting is deliberately
 motorcycle-shaped: ice outranks everything, then thunderstorms and gusts, then
