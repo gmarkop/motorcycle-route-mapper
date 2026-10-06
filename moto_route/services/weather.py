@@ -349,7 +349,11 @@ async def forecast_along_route(
         for (lat, lon, distance_m, eta, heading), series in zip(planned, raw)
     ]
     result = {"available": True, "stale": False, "points": [p.to_dict() for p in points],
-              "summary": summarise(points)}
+              "summary": summarise(points),
+              # When this forecast was fetched. Cached and stale copies keep the
+              # original, which is the point: a marker on a phone mid-ride has
+              # to be able to say how old its information is.
+              "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     cache.set(cache_key, result, settings.weather_ttl_s)
     return result
 

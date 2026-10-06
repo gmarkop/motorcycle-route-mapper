@@ -34,6 +34,7 @@ from .config import Settings, get_settings
 from .models import Route
 from .parsers import RouteParseError, SUPPORTED_EXTENSIONS, parse_route_bytes
 from .services import alternates as alternates_service
+from .services import daylight as daylight_service
 from .services import elevation as elevation_service
 from .services import hazards as hazards_service
 from .services import incidents as incidents_service
@@ -164,6 +165,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings=settings,
             client=app.state.http,
             cache=app.state.weather_cache,
+        )
+
+    @app.get("/api/routes/{route_id}/daylight")
+    async def route_daylight(
+        route_id: str,
+        departure: str | None = Query(None, description="ISO-8601 departure time; defaults to now"),
+        speed_kmh: float = Query(0, ge=0, le=200, description="Average moving speed"),
+    ) -> dict[str, Any]:
+        """Where the light changes along the route, at the planned time and speed.
+
+        Pure arithmetic, so it answers offline and for a departure months away --
+        the cases where the weather endpoint has nothing to give.
+        """
+        route = store.get(route_id)
+        return daylight_service.along_route(
+            route,
+            departure=_parse_departure(departure),
+            speed_kmh=speed_kmh or settings.default_speed_kmh,
+            settings=settings,
         )
 
     @app.get("/api/routes/{route_id}/hazards")
@@ -316,8 +336,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             chosen = {name.strip() for name in include.split(",") if name.strip()}
             chosen &= export.EXPORTABLE
 
+        daylight_data = daylight_service.along_route(
+            route,
+            departure=_parse_departure(departure),
+            speed_kmh=speed_kmh or settings.default_speed_kmh,
+            settings=settings,
+        )
+
         payload = export.build_gpx(
             route, weather_data, hazard_data, poi_data, demanding,
+            daylight=daylight_data,
             include=chosen,
             include_shaping_points=include_shaping,
             include_track=parts != "stops",

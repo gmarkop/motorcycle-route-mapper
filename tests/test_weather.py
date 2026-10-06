@@ -511,3 +511,29 @@ def test_a_point_past_the_horizon_is_distinguished_from_a_missing_hour(settings)
 
     assert far_point.description == "Beyond the forecast horizon"
     assert near_point.description == "No forecast for this time"
+
+
+async def test_a_forecast_records_when_it_was_fetched_and_a_cached_copy_keeps_it(
+        long_route, settings, cache):
+    """The stamp is the time of the fetch, not of the request that read it.
+
+    A cache hit an hour later handing back the same forecast with a fresh time
+    on it would claim a freshness the data does not have.
+    """
+    departure = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        count = len(request.url.params["latitude"].split(","))
+        return httpx.Response(200, json=[hourly_series(departure) for _ in range(count)])
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("the second read must come from the cache")
+
+    async with make_client(answer) as client:
+        first = await weather.forecast_along_route(long_route, departure, 60, settings, client, cache)
+    async with make_client(refuse) as client:
+        second = await weather.forecast_along_route(long_route, departure, 60, settings, client, cache)
+
+    fetched = datetime.fromisoformat(first["fetched_at"])
+    assert abs(datetime.now(timezone.utc) - fetched) < timedelta(minutes=1)
+    assert second["fetched_at"] == first["fetched_at"]

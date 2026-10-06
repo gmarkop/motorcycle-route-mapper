@@ -12,6 +12,21 @@ export function esc(text) {
 export const km = (metres) => `${(metres / 1000).toFixed(1)} km`;
 export const kmRounded = (metres) => `${Math.round(metres / 1000)}`;
 
+/**
+ * The light at a distance along the route: 'day', 'dawn', 'dusk' or 'night',
+ * or null when daylight has not been worked out. Mirrors `light_at` in
+ * services/daylight.py, so the panel and the GPX agree about the same stretch.
+ */
+export function lightAt(daylight, metres) {
+  if (!daylight || !daylight.available) return null;
+  let state = (daylight.start || {}).light || null;
+  for (const change of daylight.changes || []) {
+    if (change.distance_m > metres) break;
+    state = change.light;
+  }
+  return state;
+}
+
 export function localTime(iso) {
   if (!iso) return '';
   const date = new Date(iso);

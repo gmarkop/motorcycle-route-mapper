@@ -408,3 +408,32 @@ def test_ticking_nothing_is_not_the_same_as_asking_for_the_usual_set():
     assert "include === null ? ''" in body, (
         "null (not asked) and [] (asked for nothing) must send different URLs"
     )
+
+
+def test_daylight_is_its_own_request_not_part_of_the_weather():
+    """Bolted onto the weather, it would vanish exactly when it is wanted.
+
+    The forecast refuses past its 16-day horizon and when its service is down.
+    Sunset is arithmetic. A ride planned three weeks out -- the reason this was
+    built -- would have got no daylight warning at all.
+    """
+    source = (JS / "app.js").read_text()
+    paths = source[source.index("const paths = {"):]
+    paths = paths[:paths.index("};")]
+
+    assert "daylight: `/daylight?" in paths, paths
+    assert "daylight:" in source[source.index("const RENDERERS = {"):][:600]
+
+
+def test_daylight_redraws_what_depends_on_it_whichever_answer_lands_last():
+    """Three requests, any order. The last one in must leave all three agreeing."""
+    source = (JS / "panels.js").read_text()
+    body = source[source.index("export function showDaylight"):]
+    body = body[:body.index("\n}\n")]
+
+    assert "showWeather(lastWeather)" in body
+    assert "showDemanding(lastCurviness)" in body
+    for name in ("export function showWeather", "function showDemanding"):
+        fn = source[source.index(name):]
+        fn = fn[:fn.index("\n}\n")]
+        assert "lightTag(" in fn, f"{name} must mark rows that fall outside daylight"
