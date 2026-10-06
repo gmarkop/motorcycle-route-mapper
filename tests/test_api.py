@@ -332,3 +332,15 @@ def test_the_tile_cache_survives_a_deploy():
 
     assert "${VERSION}" not in tile_cache
     assert tile_cache == "moto-tiles-v1", "renaming it discards existing tiles"
+
+
+def test_daylight_answers_with_every_live_layer_switched_off(client, uploaded):
+    """This client runs offline, so the weather refuses. Daylight must not."""
+    route_id = uploaded["id"]
+    weather = client.get(f"/api/routes/{route_id}/weather").json()
+    light = client.get(f"/api/routes/{route_id}/daylight",
+                       params={"departure": "2026-10-23T14:30:00+00:00", "speed_kmh": 60}).json()
+
+    assert weather["available"] is False
+    assert light["available"] is True
+    assert light["start"]["light"] in {"day", "dawn", "dusk", "night"}

@@ -24,6 +24,7 @@ from xml.etree import ElementTree as ET
 
 from . import __version__
 from .models import Route
+from .services.daylight import light_at
 
 GPX_NAMESPACE = "http://www.topografix.com/GPX/1/1"
 
@@ -37,6 +38,7 @@ SYMBOLS = {
     "motorcycle_parking": "Parking Area",
     "hazard": "Danger Area",
     "demanding": "Summit",
+    "daylight": "Pin, Blue",
     "weather": "Flag, Red",
     "waypoint": "Flag, Blue",
 }
@@ -53,7 +55,7 @@ SYMBOLS = {
 #: more markers and is a separate decision from wanting the plan.
 EXPORTABLE = frozenset({
     "waypoints", "fuel", "fuel_all", "cafe", "viewpoint", "accommodation",
-    "motorcycle_parking", "hazards", "demanding", "weather",
+    "motorcycle_parking", "hazards", "demanding", "weather", "daylight",
 })
 
 #: What an export with nothing asked for contains. Everything except cafes:
@@ -81,6 +83,7 @@ def build_gpx(
     pois: dict[str, Any] | None = None,
     demanding: list[dict[str, Any]] | None = None,
     *,
+    daylight: dict[str, Any] | None = None,
     include: frozenset[str] | set[str] | None = None,
     include_shaping_points: bool = False,
     include_track: bool = True,
@@ -105,7 +108,7 @@ def build_gpx(
 
     if include_waypoints:
         for waypoint in _collect_waypoints(route, weather, hazards, pois, demanding,
-                                           include_shaping_points,
+                                           daylight, include_shaping_points,
                                            DEFAULT_INCLUDE if include is None else include):
             _write_waypoint(root, waypoint)
 
@@ -141,6 +144,7 @@ def _collect_waypoints(
     hazards: dict[str, Any] | None,
     pois: dict[str, Any] | None,
     demanding: list[dict[str, Any]] | None,
+    daylight: dict[str, Any] | None,
     include_shaping_points: bool,
     include: frozenset[str] | set[str],
 ) -> list[dict[str, Any]]:
@@ -178,7 +182,9 @@ def _collect_waypoints(
             "lat": point["lat"],
             "lon": point["lon"],
             "name": f"Weather km {distance_km:.0f}: {point.get('description', '')}".strip(),
-            "desc": "; ".join(warnings) + f" (rideability {point.get('rideability', '?')}/100)",
+            "desc": ("; ".join(warnings)
+                     + f" (rideability {point.get('rideability', '?')}/100)."
+                     + _forecast_stamp(point.get("eta"), (weather or {}).get("fetched_at"))),
             "sym": SYMBOLS["weather"],
             "type": "weather",
             "along": point.get("distance_m") or 0.0,
@@ -266,14 +272,100 @@ def _collect_waypoints(
             "lon": stretch["from_lon"],
             "name": f"Twisty & steep: {km:.1f} km {way}",
             "desc": (f"{abs(slope):.0f}% gradient, "
-                     f"{stretch.get('curviness', 0):.0f}°/km. Starts here."),
+                     f"{stretch.get('curviness', 0):.0f}°/km. Starts here."
+                     + _light_note(daylight, stretch.get("from_m"), stretch.get("to_m"))),
             "sym": SYMBOLS["demanding"],
             "type": "demanding",
             "along": stretch.get("from_m") or 0.0,
         })
 
+    changes = (daylight or {}).get("changes") or []
+    for change in changes if "daylight" in include and (daylight or {}).get("available") else []:
+        when = _clock(change.get("eta"), day=False)
+        collected.append({
+            "lat": change["lat"],
+            "lon": change["lon"],
+            "name": _DAYLIGHT_NAMES.get(change["event"], change["event"]).format(when=when),
+            "desc": (f"Expected at km {change['distance_m'] / 1000:.0f}, {when}"
+                     f" ({_zone(change.get('eta'))}), at the speed and start time planned."),
+            "sym": SYMBOLS["daylight"],
+            "type": "daylight",
+            "along": change["distance_m"],
+        })
+
     collected.sort(key=lambda item: item["along"])
     return collected
+
+
+#: How each change of light is named on the device. "Dark from" rather than
+#: "Civil dusk": the second is correct and means nothing on a handlebar.
+_DAYLIGHT_NAMES = {
+    "sunset": "Sunset {when}",
+    "dark": "Dark from {when}",
+    "first light": "First light {when}",
+    "sunrise": "Sunrise {when}",
+}
+
+#: Worst first: a stretch that ends in the dark is a dark stretch, whatever the
+#: light was when it began.
+_LIGHT_NOTES = (("night", " In the dark."), ("dusk", " After sunset."),
+                ("dawn", " Before sunrise."))
+
+
+def _light_note(daylight: dict[str, Any] | None, start_m, end_m) -> str:
+    """" After sunset." and the like, for a stretch that is not in daylight."""
+    seen = {light_at(daylight, start_m or 0.0), light_at(daylight, end_m or start_m or 0.0)}
+    for light, note in _LIGHT_NOTES:
+        if light in seen:
+            return note
+    return ""
+
+
+def _forecast_stamp(eta: str | None, fetched_at: str | None) -> str:
+    """" Forecast for Fri 14:20, checked Thu 21:05 (EEST)."
+
+    A marker on a phone mid-ride looks exactly as current a week after export
+    as it did the evening it was made. The hour it is for says whether you are
+    early or late against it; the hour it was fetched says how far to trust it.
+    """
+    target = _clock(eta)
+    if target is None:
+        return ""
+    checked = _clock(fetched_at)
+    zone = _zone(eta)
+    if checked is None:
+        return f" Forecast for {target} ({zone})."
+    return f" Forecast for {target}, checked {checked} ({zone})."
+
+
+def _clock(iso: str | None, *, day: bool = True) -> str | None:
+    """An ISO time on the server's clock, the way a rider reads one.
+
+    The server's zone, because the export has no other to go on -- the browser's
+    is not sent, and the box this runs on sits in the rider's own country. The
+    zone is printed beside it so that is never a silent assumption.
+    """
+    local = _local(iso)
+    if local is None:
+        return None
+    return local.strftime("%a %H:%M" if day else "%H:%M")
+
+
+def _zone(iso: str | None) -> str:
+    local = _local(iso)
+    return (local.tzname() or "local") if local else "local"
+
+
+def _local(iso: str | None) -> datetime | None:
+    if not iso:
+        return None
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone()
 
 
 def _entries(payload: dict[str, Any] | None, key: str) -> Iterable[dict[str, Any]]:

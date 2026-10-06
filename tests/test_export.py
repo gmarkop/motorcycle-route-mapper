@@ -509,3 +509,103 @@ def test_an_export_asking_for_nothing_in_particular_is_unchanged(route, weather,
 
     strip = lambda body: re.sub(rb"<time>.*?</time>|Enriched [^<]*", b"", body)  # noqa: E731
     assert strip(before) == strip(same)
+
+
+# ------------------------------------------- timestamps and the light, on device
+
+@pytest.fixture
+def athens_clock(monkeypatch):
+    """The server's zone is what the export prints, so pin it to the rider's."""
+    import time
+    monkeypatch.setenv("TZ", "Europe/Athens")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def _rain_at(eta: str, fetched_at: str | None) -> dict:
+    payload = {"available": True, "points": [
+        {"lat": 48.05, "lon": 11.0, "distance_m": 5000, "eta": eta,
+         "description": "Light rain", "rideability": 58, "warnings": ["Rain (1.4 mm/h)"]}]}
+    if fetched_at:
+        payload["fetched_at"] = fetched_at
+    return payload
+
+
+def test_a_weather_marker_says_which_hour_it_is_for_and_when_it_was_checked(route, athens_clock):
+    """On a phone a week later, a marker looks exactly as current as the night
+    it was made. The hour it is for says whether you are early or late against
+    it; the hour it was checked says how far to trust it."""
+    wx = _rain_at("2026-10-23T11:20:00+00:00", "2026-10-22T18:05:00+00:00")
+    marker = next(w for w in parse_route_bytes(
+        export.build_gpx(route, weather=wx), "x.gpx").waypoints if w.name.startswith("Weather"))
+
+    assert "Forecast for Fri 14:20, checked Thu 21:05 (EEST)." in marker.description
+
+
+def test_a_forecast_without_a_fetch_time_still_says_which_hour_it_is_for(route, athens_clock):
+    """Payloads cached before the stamp existed have no fetched_at. They should
+    lose the half they cannot support, not the half they can."""
+    wx = _rain_at("2026-10-23T11:20:00+00:00", None)
+    marker = next(w for w in parse_route_bytes(
+        export.build_gpx(route, weather=wx), "x.gpx").waypoints if w.name.startswith("Weather"))
+
+    assert "Forecast for Fri 14:20 (EEST)." in marker.description
+    assert "checked" not in marker.description
+
+
+def _evening() -> dict:
+    return {"available": True, "start": {"light": "day", "distance_m": 0},
+            "end": {"light": "night", "distance_m": 20000},
+            "changes": [
+                {"event": "sunset", "light": "dusk", "distance_m": 8000,
+                 "eta": "2026-10-23T15:37:00+00:00", "lat": 48.08, "lon": 11.0},
+                {"event": "dark", "light": "night", "distance_m": 12000,
+                 "eta": "2026-10-23T16:04:00+00:00", "lat": 48.11, "lon": 11.0},
+            ]}
+
+
+def test_sunset_and_darkness_reach_the_device_as_markers(route, athens_clock):
+    """The app cannot come on the ride. A marker at the place the light goes is
+    how the warning does."""
+    found = {w.name: w.symbol for w in parse_route_bytes(
+        export.build_gpx(route, daylight=_evening()), "x.gpx").waypoints}
+
+    assert found.get("Sunset 18:37") == export.SYMBOLS["daylight"], found
+    assert found.get("Dark from 19:04") == export.SYMBOLS["daylight"], found
+
+
+def test_daylight_markers_can_be_left_off(route):
+    names = [w.name for w in parse_route_bytes(
+        export.build_gpx(route, daylight=_evening(), include={"waypoints"}), "x.gpx").waypoints]
+
+    assert not any(name.startswith(("Sunset", "Dark")) for name in names), names
+
+
+def test_a_twisty_stretch_in_the_dark_says_so(route):
+    """The combination is the warning: hairpins on a descent are one thing,
+    hairpins on a descent after the light has gone are another."""
+    stretches = [
+        {"from_m": 2000, "to_m": 4000, "length_m": 2000, "curviness": 180.0,
+         "gradient_pct": 8.0, "descending": False, "from_lat": 48.02, "from_lon": 11.0},
+        {"from_m": 15000, "to_m": 18000, "length_m": 3000, "curviness": 200.0,
+         "gradient_pct": -9.0, "descending": True, "from_lat": 48.15, "from_lon": 11.0},
+    ]
+    marks = [w for w in parse_route_bytes(
+        export.build_gpx(route, demanding=stretches, daylight=_evening()), "x.gpx").waypoints
+        if (w.name or "").startswith("Twisty")]
+
+    assert marks[0].description.endswith("Starts here."), marks[0].description
+    assert marks[1].description.endswith("In the dark."), marks[1].description
+
+
+def test_a_stretch_that_runs_into_the_dark_is_a_dark_stretch(route):
+    """Starting in failing light and ending in none is worst-case, not best."""
+    stretch = [{"from_m": 10000, "to_m": 13000, "length_m": 3000, "curviness": 200.0,
+                "gradient_pct": -9.0, "descending": True, "from_lat": 48.1, "from_lon": 11.0}]
+    mark = next(w for w in parse_route_bytes(
+        export.build_gpx(route, demanding=stretch, daylight=_evening()), "x.gpx").waypoints
+        if (w.name or "").startswith("Twisty"))
+
+    assert mark.description.endswith("In the dark."), mark.description

@@ -60,6 +60,16 @@ The forecast reaches 16 days. Plan a ride further out than that and the panel
 says so, and names the date its window will reach your departure — "no
 forecast" on its own reads like a fault, and this is not one.
 
+**Says where the light goes.** From the same arrival times, it works out where
+along the route you will reach sunset and where usable light ends, and flags
+the weather rows and the twisty-and-steep stretches that fall after them:
+*"Sunset 18:37 at km 138 · dark from km 168 — 49 km of it in the dark."* A
+finish less than an hour before sunset is called out too, because a late start
+or a long lunch is all it takes to move the dark onto the road. It is pure
+arithmetic — the sun's position from date and place, no API — so it works
+offline and for a ride months away, which is exactly when the forecast has
+nothing to say.
+
 **Scores conditions for two wheels, not four.** Each sample gets a *rideability*
 score from 0 to 100 with the reasons spelled out. The weighting is deliberately
 motorcycle-shaped: ice outranks everything, then thunderstorms and gusts, then
@@ -111,6 +121,12 @@ warnings, closures, fuel, viewpoints, hotels, parking and the twisty-and-steep
 stretches back in as ordinary waypoints with Garmin symbol names, so the device
 shows them as proper icons and no device needs to understand anything specific
 to this app.
+
+Sunset and the end of usable light become markers at the places you will reach
+them, and a twisty stretch that falls after either says so. Every weather
+marker carries the hour it is a forecast for and the time it was fetched —
+*"Forecast for Fri 14:20, checked Thu 21:05 (EEST)"* — because on a phone mid-ride
+a week-old marker otherwise looks exactly as current as the night it was made.
 
 Planned refuelling stops are numbered in riding order — "Fuel stop 2" is the
 plan's second stop, not the second pump you pass — and every other station
@@ -336,6 +352,7 @@ Useful if you want to script it or build your own frontend.
 | `GET` | `/api/routes/{id}/incidents` | Live road-authority incidents |
 | `GET` | `/api/routes/{id}/curviness` | `?window_m=<n>` — curviness sampled along the route |
 | `GET` | `/api/routes/{id}/elevation` | Distance/elevation pairs for the profile |
+| `GET` | `/api/routes/{id}/daylight` | `?departure=<iso>&speed_kmh=<n>` — where sunset and darkness fall along the route |
 | `GET` | `/api/routes/{id}/export.gpx` | `?parts=all\|route\|stops&include=<categories>` — the enriched ride as a downloadable GPX |
 
 Interactive documentation is generated at <http://127.0.0.1:8000/docs>.
@@ -443,7 +460,7 @@ route sheet and the offline tile cache have all since been built — see
 
 ## A note on the tests
 
-Around 390 of them, and they run offline in about fifteen seconds. Two
+Around 440 of them, and they run offline in about fifteen seconds. Two
 patterns are worth copying:
 
 **HTTP is mocked at the transport, not the function.** Every service test uses

@@ -52,6 +52,10 @@ const state = {
 // and the app looks broken at exactly the moment it is working hardest.
 const LAYERS = {
   weather: { panel: 'weather-panel', list: 'weather-list' },
+  // Its own request, not part of the weather's: it is arithmetic, so it still
+  // answers when the forecast cannot -- a departure past the 16-day horizon,
+  // or the weather service down.
+  daylight: { panel: 'weather-panel', list: 'daylight' },
   pois: {
     panel: 'fuel-panel', list: 'poi-list',
     waiting: 'Searching OpenStreetMap for fuel, coffee, views, parking and places to stay…',
@@ -320,6 +324,7 @@ async function refreshLiveData() {
   const { speed, tank, departure } = planParams();
   const paths = {
     weather: `/weather?speed_kmh=${speed}&departure=${departure}`,
+    daylight: `/daylight?speed_kmh=${speed}&departure=${departure}`,
     pois: `/pois?tank_range_km=${tank}`,
     hazards: '/hazards',
     incidents: '/incidents',
@@ -402,6 +407,10 @@ async function cachedLayer(name) {
 
 const RENDERERS = {
   weather: (payload) => panels.showWeather(payload),
+  daylight: (payload) => {
+    state.daylight = payload;
+    panels.showDaylight(payload);
+  },
   pois: (payload) => {
     state.poiPayload = payload;
     panels.showPois(payload, state.poiFilter);
@@ -884,12 +893,17 @@ const EXPORT_SECTIONS = [
   { key: 'motorcycle_parking', label: 'Motorcycle parking' },
   { key: 'hazards', label: 'Closures & roadworks' },
   { key: 'demanding', label: 'Twisty & steep stretches' },
+  { key: 'daylight', label: 'Sunset & darkness' },
   { key: 'weather', label: 'Weather warnings' },
 ];
 
 function exportCount(key) {
   const counts = (state.poiPayload && state.poiPayload.counts) || {};
   if (key === 'fuel_all') return counts.fuel;
+  if (key === 'daylight') {
+    return state.daylight && state.daylight.available
+      ? (state.daylight.changes || []).length : undefined;
+  }
   if (counts[key] !== undefined) return counts[key];
   return printCount({ hazards: 'hazards', demanding: 'demanding' }[key] || key);
 }

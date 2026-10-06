@@ -9,7 +9,9 @@
  * case — a failed layer is a sentence in the sidebar, never a broken page.
  */
 
-import { esc, km, localTime, scoreClass, curvinessGradient, curvinessLabel } from './format.js';
+import {
+  esc, km, kmRounded, lightAt, localTime, scoreClass, curvinessGradient, curvinessLabel,
+} from './format.js';
 import * as mapview from './mapview.js';
 
 const $ = (id) => document.getElementById(id);
@@ -156,6 +158,112 @@ function windArrow(point) {
     + `${esc(point.wind_relative)}${across}</span>`;
 }
 
+// ------------------------------------------------------------------ daylight
+
+/*
+ * Daylight arrives on its own request, and the weather rows and the demanding
+ * stretches both want it. Whichever lands last redraws the others, so the
+ * three agree regardless of the order the network answers in.
+ */
+let daylight = null;
+let lastWeather = null;
+let lastCurviness = null;
+
+/** Worst first: a stretch that ends in the dark is a dark stretch. */
+const LIGHT_TAGS = [
+  ['night', 'In the dark'],
+  ['dusk', 'After sunset'],
+  ['dawn', 'Before sunrise'],
+];
+
+/** A warning line for whatever spans these distances, or '' in daylight. */
+function lightTag(distances) {
+  const seen = new Set(distances.map((metres) => lightAt(daylight, metres)));
+  const hit = LIGHT_TAGS.find(([light]) => seen.has(light));
+  return hit ? `<span class="warn-text">${hit[1]}</span>` : '';
+}
+
+export function showDaylight(payload) {
+  daylight = payload && payload.available ? payload : null;
+  $('weather-panel').hidden = false;
+  const box = $('daylight');
+
+  if (!daylight) {
+    box.innerHTML = payload && payload.reason
+      ? `<li class="muted tiny">${esc(payload.reason)}</li>` : '';
+  } else {
+    const { text, warn } = daylightSummary(daylight);
+    box.innerHTML = `<li class="daylight">
+        <span class="where">Light</span>
+        <span class="what">${esc(text)}${warn ? `<span class="warn-text">${esc(warn)}</span>` : ''}</span>
+      </li>`;
+  }
+
+  if (lastWeather) showWeather(lastWeather);
+  if (lastCurviness) showDemanding(lastCurviness);
+}
+
+/**
+ * The one line read before leaving: where the light changes, and how much of
+ * the ride is outside it. Times in the browser's zone, like every other time
+ * on this page.
+ */
+function daylightSummary(d) {
+  const changes = d.changes || [];
+  const end = d.end || {};
+  const tight = (end.margin_min != null && end.margin_min < 60)
+    // An hour is roughly what a late start or a long lunch costs; inside it,
+    // the margin is the thing most likely to move the dark onto the road.
+    ? `Only ${end.margin_min} min to spare: a late start or a long stop puts the end of the ride in the dark.`
+    : '';
+
+  if (!changes.length) {
+    if (d.start.light === 'day') {
+      const text = `All in daylight. Arriving ${localTime(end.eta)}`
+        + (end.sunset ? `, sunset ${localTime(end.sunset)}.` : '.');
+      return { text, warn: tight };
+    }
+    return {
+      text: '',
+      warn: {
+        night: 'Ridden entirely in the dark.',
+        dusk: 'Ridden entirely after sunset, in failing light.',
+        dawn: 'Ridden entirely before sunrise.',
+      }[d.start.light] || '',
+    };
+  }
+
+  const phrase = {
+    sunset: (c) => `sunset ${localTime(c.eta)} at km ${kmRounded(c.distance_m)}`,
+    dark: (c) => `dark from km ${kmRounded(c.distance_m)} (${localTime(c.eta)})`,
+    'first light': (c) => `first light at km ${kmRounded(c.distance_m)} (${localTime(c.eta)})`,
+    sunrise: (c) => `sunrise at km ${kmRounded(c.distance_m)} (${localTime(c.eta)})`,
+  };
+  const listed = changes.map((c) => (phrase[c.event] || (() => c.event))(c)).join(' · ');
+  const text = `${listed.charAt(0).toUpperCase()}${listed.slice(1)}.`;
+
+  // Walk the route once, adding up what lies outside daylight.
+  let outside = 0;
+  let dark = 0;
+  let state = d.start.light;
+  let from = d.start.distance_m || 0;
+  for (const leg of [...changes, { distance_m: end.distance_m, light: end.light }]) {
+    const length = Math.max(0, leg.distance_m - from);
+    if (state !== 'day') outside += length;
+    if (state === 'night') dark += length;
+    state = leg.light;
+    from = leg.distance_m;
+  }
+
+  let warn = tight;
+  if (dark > 0) {
+    warn = `${kmRounded(outside)} km outside daylight, ${kmRounded(dark)} km of it in the dark.`;
+  } else if (outside > 0) {
+    warn = `${kmRounded(outside)} km in twilight.`;
+  }
+  return { text, warn };
+}
+
 export function setCurvinessStat(value, label) {
   $('stat-curvy').textContent = `${Math.round(value)}°/km`;
   $('stat-curvy').title = label || '';
@@ -164,6 +272,7 @@ export function setCurvinessStat(value, label) {
 // -------------------------------------------------------------------- weather
 
 export function showWeather(payload) {
+  lastWeather = payload;
   $('weather-panel').hidden = false;
   const verdict = $('weather-verdict');
 
@@ -194,6 +303,7 @@ export function showWeather(payload) {
         ${point.gust_kmh != null ? `· gusts ${point.gust_kmh.toFixed(0)} km/h` : ''}
         ${windArrow(point)}
         ${point.warnings.map((w) => `<span class="warn-text">${esc(w)}</span>`).join('')}
+        ${lightTag([point.distance_m])}
       </span>
       <span class="score ${scoreClass(point.rideability)}">${point.rideability}</span>
     </li>`).join('');
@@ -452,6 +562,7 @@ export function showCurviness(payload) {
  * whether the corners are on the way up or the way down.
  */
 function showDemanding(payload) {
+  lastCurviness = payload;
   const panel = $('demanding-panel');
   const list = $('demanding-list');
   const note = $('demanding-note');
@@ -482,6 +593,7 @@ function showDemanding(payload) {
       <strong>${km(s.from_m)}–${km(s.to_m)}</strong>
       <span class="muted"> · ${Math.round(s.length_m)} m</span>
       <div class="tiny">${esc(curvinessLabel(s.curviness))} on a ${slope}% ${way}</div>
+      ${lightTag([s.from_m, s.to_m])}
     </li>`;
   }).join('');
 }
