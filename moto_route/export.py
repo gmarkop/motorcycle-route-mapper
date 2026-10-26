@@ -18,6 +18,7 @@ parsers accept and others silently reject.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from xml.etree import ElementTree as ET
@@ -265,14 +266,23 @@ def _collect_waypoints(
         if stretch.get("from_lat") is None or stretch.get("from_lon") is None:
             continue
         km = (stretch.get("length_m") or 0) / 1000.0
-        slope = stretch.get("gradient_pct") or 0.0
         way = "down" if stretch.get("descending") else "up"
+        angle = _slope_degrees(stretch.get("gradient_pct"))
         collected.append({
             "lat": stretch["from_lat"],
             "lon": stretch["from_lon"],
-            "name": f"Twisty & steep: {km:.1f} km {way}",
-            "desc": (f"{abs(slope):.0f}% gradient, "
-                     f"{stretch.get('curviness', 0):.0f}°/km. Starts here."
+            # "T&S: 0.4 up 5°". A navigation display gives a marker's name about
+            # sixteen characters before it cuts it off, and "Twisty & steep:"
+            # alone spent all of them -- the length and the direction, the part
+            # worth reading, were what got cut.
+            "name": f"T&S: {km:.1f} {way} {angle:.0f}°",
+            # The description spells the abbreviation out, so anyone who opens
+            # it learns what T&S means. Corners stay labelled: they are also
+            # measured in degrees, per kilometre, and "5°, 190°/km" unlabelled
+            # would read as two of the same thing.
+            "desc": (f"Twisty and steep for {km:.1f} km, {way}hill. "
+                     f"Steepest {angle:.0f}°, corners {stretch.get('curviness', 0):.0f}°/km. "
+                     "Starts here."
                      + _light_note(daylight, stretch.get("from_m"), stretch.get("to_m"))),
             "sym": SYMBOLS["demanding"],
             "type": "demanding",
@@ -295,6 +305,17 @@ def _collect_waypoints(
 
     collected.sort(key=lambda item: item["along"])
     return collected
+
+
+def _slope_degrees(gradient_pct: float | None) -> float:
+    """A gradient in percent as the angle of the road, in degrees.
+
+    Percent is rise over run -- 10% climbs 10 m per 100 m travelled -- so the
+    angle is its arctangent, not a tenth of it: 10% is 5.7°, 100% is 45°. The
+    value is the steepest part of the stretch, which is what changes braking
+    and gear choice, not the average that hides it.
+    """
+    return math.degrees(math.atan(abs(gradient_pct or 0.0) / 100.0))
 
 
 #: How each change of light is named on the device. "Dark from" rather than

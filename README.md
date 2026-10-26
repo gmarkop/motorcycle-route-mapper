@@ -134,7 +134,9 @@ still ships, because the thing that goes wrong on the road is a planned stop
 being shut. GPX has no colour for a waypoint (it is not in the 1.1 schema, and
 Garmin's waypoint extension does not add one), so the symbol carries the
 category and the name carries the meaning: a demanding stretch arrives as
-"Twisty & steep: 3.2 km down" with the gradient in its description.
+"T&S: 3.2 down 5°" — length, direction and the steepest slope as an angle,
+short enough that a navigation display does not cut it off. The description
+spells it out.
 
 **Download enriched GPX** asks what belongs on the device first, the way the
 print dialog asks what belongs on the page. Planned fuel stops and every other

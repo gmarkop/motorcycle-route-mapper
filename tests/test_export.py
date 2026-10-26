@@ -332,10 +332,11 @@ def test_demanding_stretches_become_waypoints_at_their_start():
                   "from_lat": 40.045, "from_lon": 23.0}]
 
     reparsed = parse_route_bytes(export.build_gpx(route, demanding=stretches), "x.gpx")
-    marks = [w for w in reparsed.waypoints if "Twisty" in (w.name or "")]
+    marks = [w for w in reparsed.waypoints if (w.name or "").startswith("T&S")]
 
     assert len(marks) == 1, [w.name for w in reparsed.waypoints]
-    assert "3.2 km" in marks[0].name and "down" in marks[0].name, marks[0].name
+    # -8.4% is an angle of 4.8°, shown whole.
+    assert marks[0].name == "T&S: 3.2 down 5°", marks[0].name
     assert marks[0].symbol == "Summit"
     assert marks[0].lat == pytest.approx(40.045)
 
@@ -594,7 +595,7 @@ def test_a_twisty_stretch_in_the_dark_says_so(route):
     ]
     marks = [w for w in parse_route_bytes(
         export.build_gpx(route, demanding=stretches, daylight=_evening()), "x.gpx").waypoints
-        if (w.name or "").startswith("Twisty")]
+        if (w.name or "").startswith("T&S")]
 
     assert marks[0].description.endswith("Starts here."), marks[0].description
     assert marks[1].description.endswith("In the dark."), marks[1].description
@@ -606,6 +607,63 @@ def test_a_stretch_that_runs_into_the_dark_is_a_dark_stretch(route):
                 "gradient_pct": -9.0, "descending": True, "from_lat": 48.1, "from_lon": 11.0}]
     mark = next(w for w in parse_route_bytes(
         export.build_gpx(route, demanding=stretch, daylight=_evening()), "x.gpx").waypoints
-        if (w.name or "").startswith("Twisty"))
+        if (w.name or "").startswith("T&S"))
 
     assert mark.description.endswith("In the dark."), mark.description
+
+
+def test_a_demanding_marker_name_fits_a_navigation_display():
+    """About sixteen characters show before a display cuts a name off.
+
+    "Twisty & steep: 0.4 km up" lost everything after the colon -- the length
+    and the direction, the only part worth reading at speed. The rider saw
+    "Twisty and Steep..." on every one of them.
+    """
+    route = Route(name="t", source_format="gpx",
+                  lines=[[GeoPoint(lat=40.0 + i * 0.01, lon=23.0) for i in range(6)]],
+                  waypoints=[])
+    stretches = [
+        {"from_m": 1000, "to_m": 1400, "length_m": 400, "curviness": 180.0,
+         "gradient_pct": 8.0, "descending": False, "from_lat": 40.01, "from_lon": 23.0},
+        {"from_m": 3000, "to_m": 6200, "length_m": 3200, "curviness": 210.0,
+         "gradient_pct": -12.0, "descending": True, "from_lat": 40.03, "from_lon": 23.0},
+    ]
+    names = [w.name for w in parse_route_bytes(
+        export.build_gpx(route, demanding=stretches), "x.gpx").waypoints
+        if (w.name or "").startswith("T&S")]
+
+    assert names == ["T&S: 0.4 up 5°", "T&S: 3.2 down 7°"], names
+    assert all(len(name) <= 16 for name in names), names
+
+
+def test_slope_is_an_angle_not_a_tenth_of_the_percentage():
+    """Percent is rise over run, so the angle is its arctangent.
+
+    The tempting shortcut -- divide by ten, or read 10% as 10° -- is wrong at
+    every value a road actually has, and in the direction that understates
+    nothing: 10% is 5.7°, not 10°.
+    """
+    assert export._slope_degrees(10.0) == pytest.approx(5.711, abs=0.01)
+    assert export._slope_degrees(-8.0) == pytest.approx(4.574, abs=0.01)
+    assert export._slope_degrees(100.0) == pytest.approx(45.0, abs=0.01)
+    assert export._slope_degrees(None) == 0.0
+
+
+def test_the_description_spells_out_the_abbreviation_and_drops_percent():
+    """Whoever opens the marker should learn what T&S means.
+
+    And the corners stay labelled, because they are degrees too -- per
+    kilometre -- and "5°, 190°/km" side by side would read as one unit twice.
+    """
+    route = Route(name="t", source_format="gpx",
+                  lines=[[GeoPoint(lat=40.0 + i * 0.01, lon=23.0) for i in range(6)]],
+                  waypoints=[])
+    stretch = [{"from_m": 1000, "to_m": 1400, "length_m": 400, "curviness": 180.0,
+                "gradient_pct": 8.0, "descending": False, "from_lat": 40.01, "from_lon": 23.0}]
+    desc = next(w.description for w in parse_route_bytes(
+        export.build_gpx(route, demanding=stretch), "x.gpx").waypoints
+        if (w.name or "").startswith("T&S"))
+
+    assert desc.startswith("Twisty and steep for 0.4 km, uphill."), desc
+    assert "Steepest 5°" in desc and "corners 180°/km" in desc, desc
+    assert "%" not in desc, desc
