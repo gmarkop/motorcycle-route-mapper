@@ -5,6 +5,7 @@ Python suite never loads the page, and a broken one still renders enough to
 look alive.
 """
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -84,8 +85,12 @@ def test_printing_without_the_dialog_prints_the_page():
     css = (REPO / "moto_route" / "static" / "style.css").read_text()
     printed = css[css.index("@media print"):]
 
+    # Only a `:not(...)` rule can fire with the attribute absent; a positive
+    # match such as `body[data-print~="mission"]` needs it there to match at
+    # all. The mission sheet is the one thing that *should* hide when nobody
+    # chose it -- it is not part of the route sheet.
     hides = [line for line in printed.splitlines()
-             if "data-print~=" in line]
+             if ':not([data-print~=' in line and "#mission-sheet" not in line]
     assert hides, "no section rules found"
     for line in hides:
         assert "body[data-print]" in line, \
@@ -437,3 +442,88 @@ def test_daylight_redraws_what_depends_on_it_whichever_answer_lands_last():
         fn = source[source.index(name):]
         fn = fn[:fn.index("\n}\n")]
         assert "lightTag(" in fn, f"{name} must mark rows that fall outside daylight"
+
+
+# --------------------------------------------------------------- mission card
+#
+# The card's rules are run for real in test_mission.py. What is left here is
+# the wiring around it, which only exists in a browser.
+
+def test_every_module_is_in_the_offline_shell():
+    """A module the service worker does not cache breaks the app offline.
+
+    The import fails, and an ES module that fails to import takes the whole
+    page down with it -- not just the one button that needed it.
+    """
+    sw = (REPO / "moto_route" / "static" / "sw.js").read_text()
+    for module in sorted(JS.glob("*.js")):
+        assert f"'/static/js/{module.name}'" in sw, f"{module.name} is not cached for offline"
+
+
+def test_the_mission_card_is_built_without_header_or_footer_elements():
+    """The route sheet's print stylesheet hides every <header> on the page.
+
+    The first version of the card used one, and printed without its
+    silhouettes or its title.
+    """
+    css = (REPO / "moto_route" / "static" / "style.css").read_text()
+    source = (JS / "mission.js").read_text()
+    hide_list = css[css.index("/* Chrome, controls and anything"):]
+    hide_list = hide_list[:hide_list.index("{ display: none")]
+
+    assert "header" in hide_list.split()[-1] or "header," in hide_list
+    code = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
+    assert "<header" not in code and "<footer" not in code
+
+
+def test_printing_the_mission_card_prints_nothing_else():
+    css = (REPO / "moto_route" / "static" / "style.css").read_text()
+    printed = css[css.index("@media print"):]
+
+    assert 'body[data-print~="mission"] #layout { display: none !important; }' in printed
+    assert 'body[data-print~="mission"] #mission-sheet { position: static; visibility: visible; }' in printed
+    # And the route sheet, printed from Cmd-P, does not pick the card up.
+    assert 'body:not([data-print~="mission"]) #mission-sheet { display: none !important; }' in printed
+
+
+def test_the_mission_sheet_sits_outside_the_route_sheet():
+    """Outside #layout, so hiding the route sheet does not hide the card too."""
+    html = (REPO / "moto_route" / "static" / "index.html").read_text()
+    layout_end = html.index("</main>\n  </div>")
+
+    assert html.index('<div id="mission-sheet"') > layout_end
+    assert 'id="mission"' in html
+
+
+def test_the_mission_card_is_wired_and_skips_the_route_sheet_preparation():
+    source = (JS / "app.js").read_text()
+    boot = source[source.index("async function boot()"):]
+    before = source[source.index("window.addEventListener('beforeprint'"):]
+    before = before[:before.index("fillPrintHeader();")]
+
+    assert "wireMissionCard();" in boot
+    # No map to reframe for a card that has none -- and reframing it would
+    # leave the screen map zoomed out after printing.
+    assert "if (document.body.dataset.print === 'mission') return;" in before
+
+
+def test_rows_that_do_not_fit_the_card_are_never_dropped_silently():
+    """The card overflows hidden: a closure cut off the bottom looks like none."""
+    source = (JS / "app.js").read_text()
+    fit = source[source.index("function fitMissionCard"):]
+    fit = fit[:fit.index("\n}\n")]
+
+    assert "more from km" in fit
+    assert "see the full route sheet" in fit
+    assert "second.innerHTML = first.innerHTML;" in fit
+
+
+def test_a_new_route_does_not_inherit_the_last_one_s_mission_data():
+    """Print the card straight after loading a route, before its layers land,
+    and it must say "not loaded" -- not show the previous ride's weather."""
+    source = (JS / "app.js").read_text()
+    show = source[source.index("function showRoute(route)"):]
+    show = show[:show.index("\n}\n")]
+
+    for held in ("weather", "hazards", "curviness"):
+        assert f"state.{held} = null;" in show, held
