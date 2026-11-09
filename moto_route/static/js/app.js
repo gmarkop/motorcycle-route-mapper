@@ -11,6 +11,7 @@ import * as mapview from './mapview.js';
 import * as panels from './panels.js';
 import * as tiles from './tiles.js';
 import * as store from './store.js';
+import * as mission from './mission.js';
 import { curvinessGradient, esc } from './format.js';
 
 const $ = (id) => document.getElementById(id);
@@ -36,6 +37,11 @@ const state = {
   // different endpoints in either order, so each redraws when the
   // other lands rather than assuming it got there first.
   demanding: [],
+  // The last payload each panel drew, for the mission card. Held as drawn
+  // rather than fetched again, so the card says what the screen said.
+  weather: null,
+  hazards: null,
+  curviness: null,
   recoveryError: null,
   servedFromCache: false,
   config: {
@@ -182,6 +188,12 @@ function describeUploadFailure(status, payload) {
 
 /** Draw a route and reveal the panels that only make sense once one is loaded. */
 function showRoute(route) {
+  // A new route's layers have not arrived yet. Until they do, the mission
+  // card must say "not loaded" rather than print the last route's weather
+  // under this route's name.
+  state.weather = null;
+  state.hazards = null;
+  state.curviness = null;
   mapview.drawRoute(route);
   panels.showSummary(route);
   $('plan').hidden = false;
@@ -406,7 +418,10 @@ async function cachedLayer(name) {
 }
 
 const RENDERERS = {
-  weather: (payload) => panels.showWeather(payload),
+  weather: (payload) => {
+    state.weather = payload;
+    panels.showWeather(payload);
+  },
   daylight: (payload) => {
     state.daylight = payload;
     panels.showDaylight(payload);
@@ -415,7 +430,10 @@ const RENDERERS = {
     state.poiPayload = payload;
     panels.showPois(payload, state.poiFilter);
   },
-  hazards: (payload) => panels.showHazards(payload),
+  hazards: (payload) => {
+    state.hazards = payload;
+    panels.showHazards(payload);
+  },
   incidents: (payload) => panels.showIncidents(payload),
   alternates: (payload) => panels.showAlternates(payload),
 };
@@ -455,6 +473,7 @@ async function loadCurviness() {
 
 /** Keep the demanding stretches, and put them on the profile if it is drawn. */
 function rememberDemanding(payload) {
+  state.curviness = payload || null;
   state.demanding = (payload && payload.demanding) || [];
   if (state.profile && state.profile.length) drawProfile(state.profile);
 }
@@ -1047,6 +1066,9 @@ function wirePrintExport() {
   // ink that shows on paper. Hanging that off the dialog meant the browser's
   // own print command got neither.
   window.addEventListener('beforeprint', () => {
+    // The mission card is its own sheet: none of the route sheet is printed,
+    // so there is no map to reframe or profile to re-ink.
+    if (document.body.dataset.print === 'mission') return;
     fillPrintHeader();
     if (state.profile && state.profile.length) drawProfile(state.profile, true);
     // Nothing can be awaited here -- the browser prints as soon as this
@@ -1136,6 +1158,122 @@ function wirePrintExport() {
     // Safari does not always fire afterprint either; a timer is the backstop
     // rather than leaving the page filtered to whatever was printed.
     setTimeout(() => { if (document.body.dataset.print !== undefined) restore(); }, 3000);
+  });
+}
+
+// -------------------------------------------------------------- mission card
+
+/* Two copies of one A5 card on an A4 sheet, with a line to cut along.
+ *
+ * Two-up rather than an A5 page, because iPad Safari does not reliably honour
+ * `@page { size }`, and a card that silently prints at the top of an A4 sheet
+ * is not a card. Every printer does A4. Each half holds the card turned on its
+ * side, so after cutting it reads upright as a portrait card -- the shape a
+ * kneeboard or a tank-bag window wants -- whatever orientation the print
+ * dialog defaults to.
+ */
+
+/** Type sizes tried in turn until every row fits the card, largest first.
+ *  10pt is the floor: smaller is not readable at arm's length on a bike. */
+const MISSION_TYPE_PT = [14, 13, 12, 11, 10];
+
+function buildMissionCard() {
+  const departure = departureIso();
+  const speedKmh = Number($('speed').value);
+  const { rows, unchecked } = mission.missionRows({
+    weather: state.weather,
+    hazards: state.hazards,
+    curviness: state.curviness,
+    departure,
+    speedKmh,
+  });
+  const fetched = state.weather && state.weather.fetched_at;
+  const html = mission.missionCard({
+    // Read back from the summary panel, like the route sheet's header.
+    name: ($('route-name').textContent || 'Route').trim(),
+    distance: ($('stat-distance').textContent || '').trim(),
+    departure,
+    speedKmh,
+    rows,
+    unchecked,
+    checkedAt: fetched ? new Date(fetched).toLocaleString([], {
+      // 24-hour, like the times on the card itself.
+      weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }) : '',
+    printedAt: new Date().toLocaleDateString(),
+  });
+
+  const card = `<div class="mc-half"><div class="mission-card">${html}</div></div>`;
+  const sheet = $('mission-sheet');
+  sheet.innerHTML = `${card}<div class="mc-cut"><span>✂ cut here</span></div>${card}`;
+  return fitMissionCard(sheet);
+}
+
+/**
+ * Shrink the type until the list fits; past the smallest size, say what is
+ * left off. Returns how many rows did not fit.
+ *
+ * Measured, not estimated: the sheet is laid out off screen at its printed
+ * size in millimetres, so the browser's own line breaking decides. A row
+ * count would be wrong the first time a closure's name wrapped.
+ *
+ * A row that does not fit is never dropped silently. The card overflows
+ * hidden, and a missing closure at the bottom of a card looks exactly like no
+ * closure at all.
+ */
+function fitMissionCard(sheet) {
+  const [first, second] = sheet.querySelectorAll('.mission-card');
+  const list = first.querySelector('.mc-list');
+  const overflows = () => list.scrollHeight > list.clientHeight + 1;
+
+  let dropped = 0;
+  for (const pt of MISSION_TYPE_PT) {
+    sheet.style.setProperty('--mc-pt', `${pt}pt`);
+    if (!overflows()) break;
+  }
+  if (overflows()) {
+    const body = list.querySelector('tbody');
+    const rows = [...body.rows];
+    const more = document.createElement('tr');
+    more.className = 'mc-more';
+    body.appendChild(more);
+    let kept = rows.length;
+    while (kept > 1 && overflows()) {
+      kept -= 1;
+      rows[kept].remove();
+      dropped = rows.length - kept;
+      more.innerHTML = `<td colspan="3">+${dropped} more from km ${rows[kept].dataset.km}: `
+        + 'see the full route sheet.</td>';
+    }
+  }
+  second.innerHTML = first.innerHTML;
+  return dropped;
+}
+
+function wireMissionCard() {
+  const button = $('mission');
+  if (!button) return;
+
+  button.addEventListener('click', () => {
+    const stale = $('print-note');
+    if (stale) stale.remove();
+    const dropped = buildMissionCard();
+    if (dropped) {
+      showPrintNote(`${dropped} rows did not fit on the mission card, even in small `
+        + 'type. The card says so at the bottom; the full route sheet has them all.');
+    }
+
+    document.body.dataset.print = 'mission';
+    const restore = () => {
+      // The sheet itself is left in place, off screen. Safari can still be
+      // taking its snapshot when the backstop below fires, and emptying the
+      // sheet then would print a blank page.
+      if (document.body.dataset.print === 'mission') delete document.body.dataset.print;
+      window.removeEventListener('afterprint', restore);
+    };
+    window.addEventListener('afterprint', restore);
+    setTimeout(() => window.print(), 0);
+    setTimeout(restore, 3000);
   });
 }
 
@@ -1462,6 +1600,7 @@ async function boot() {
   wireCurvinessToggle();
   wireSplitter();
   wirePrintExport();
+  wireMissionCard();
   wireOffline();
   wireConnectivity();
 

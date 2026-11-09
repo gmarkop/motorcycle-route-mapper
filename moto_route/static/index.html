@@ -52,6 +52,9 @@
         <button type="button" id="export" class="secondary">Download enriched GPX</button>
         <button type="button" id="export-stops" class="secondary">Download stops only</button>
         <button type="button" id="print" class="secondary">Print / save as PDF…</button>
+        <button type="button" id="mission" class="secondary"
+                title="Bad weather, strong gusts, twisty &amp; steep stretches and closures, by km — two A5 cards on one A4 sheet">
+          Print mission card (A5 ×2)</button>
         <p class="muted tiny">Folds the weather warnings, closures, fuel, hotels and
           twisty stretches into a GPX your device can read. If your app shows them
           numbered as via points instead of named, import <em>stops only</em>
@@ -179,6 +182,10 @@
       </div>
     </main>
   </div>
+
+  <!-- Filled only when the mission card is printed. Outside #layout so that
+       printing it can hide the whole route sheet in one rule. -->
+  <div id="mission-sheet" aria-hidden="true"></div>
 
   <script src="/static/vendor/leaflet/leaflet.js"></script>
   <script type="module" src="/static/js/app.js"></script>

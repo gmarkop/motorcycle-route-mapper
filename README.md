@@ -151,6 +151,22 @@ a Garmin route file, and show them numbered rather than named. **Download
 stops only** writes the same waypoints with no track in the file, so there is
 nothing for them to attach to; import it alongside the route.
 
+**Print mission card** is the kneeboard version: the four things that can end
+a ride, on a card you can read at arm's length. Bad weather, strong gusts,
+twisty and steep stretches, and closures — in the order you meet them, with
+the km and the planned time of each, and nothing else. Fuel and sunset are
+left off on purpose: the navigation app shows both while you ride. Rain over
+four forecast points is one row ("km 25–77, worst of 4"); six hairpins a few
+hundred metres apart are one row. It prints two identical A5 cards on one A4
+sheet with a line to cut along, each turned on its side so it reads upright
+as a portrait card once cut — A4 because iPad Safari does not reliably honour
+an A5 page size. Black on white, the kind of each row spelled out (WX, WIND,
+T&S, ROAD) rather than colour-coded, and an F-16 and an F-5 in the header. A
+category that was never checked says so in a box at the top, because a card
+with no weather on it would otherwise read as a dry day; and if the list will
+not fit even in 10 pt type, the card ends with "+N more from km X" rather than
+quietly losing the bottom rows.
+
 Plus an elevation profile you can hover to see where you are on the map, and a
 [Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
 simplification pass so a 20 000-point track sends about 250 points to the browser.
@@ -255,6 +271,7 @@ moto_route/
         ├── panels.js  Sidebar rendering
         ├── tiles.js   Slippy-map maths and tile prefetching
         ├── store.js   IndexedDB: the saved ride, its layers and its file
+        ├── mission.js The mission card: rows, merging, silhouettes (pure)
         └── format.js  Pure formatting helpers
 ```
 
@@ -462,7 +479,7 @@ route sheet and the offline tile cache have all since been built — see
 
 ## A note on the tests
 
-Around 440 of them, and they run offline in about fifteen seconds. Two
+Around 460 of them, and they run offline in about fifteen seconds. Two
 patterns are worth copying:
 
 **HTTP is mocked at the transport, not the function.** Every service test uses
@@ -473,7 +490,11 @@ itself would test nothing but the mock.
 **Some things only a browser can test.** IndexedDB, service workers and the real
 offline state do not exist under pytest, so `tools/browser_test.py` drives the
 running app in headless Chromium — including switching the network genuinely
-off. Every bug it has caught was invisible to the Python suite.
+off. Every bug it has caught was invisible to the Python suite. The mission
+card's rules sit in a pure module, so `tests/test_mission.py` runs them for
+real under Node — including every warning the weather service can write,
+through the card's own classifier, so rewording one fails a test rather than
+dropping it off the card. Without Node those tests skip.
 
 **Judgement calls are tested as relationships.** The rideability score and the
 fuel planner are opinions, so the tests assert what must stay true — freezing

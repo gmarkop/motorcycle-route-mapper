@@ -366,6 +366,80 @@ body.print-map #map { flex: 0 0 359px; width: 703px; height: 359px; }
    resizing it for paper means telling Leaflet, waiting for tiles that may not
    come, and printing whatever had arrived by then. Framing it with the split
    handle is a thing the rider can see the result of. */
+/* ------------------------------------------------------------ mission card */
+
+/* Laid out off screen at its printed size, all the time it exists, so the
+   type can be fitted by measuring the real thing rather than guessing at it.
+   Millimetres throughout: this box is a sheet of paper, not a viewport.
+
+   The sheet is 184 x 268 mm, inside A4 at 12 mm margins with a few to spare
+   for a printer that keeps its own. Each half is 184 x 131, and holds a
+   127 x 179 card (A5's proportions, a little smaller) turned on its side. */
+#mission-sheet {
+  position: fixed; left: -10000px; top: 0;
+  visibility: hidden; pointer-events: none;
+  width: 184mm; background: #fff; color: #000;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+.mc-half { position: relative; width: 184mm; height: 131mm; overflow: hidden; }
+.mission-card {
+  position: absolute; left: 50%; top: 50%;
+  width: 127mm; height: 179mm; box-sizing: border-box;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  padding: 4mm; border: 0.5pt solid #000;
+  display: flex; flex-direction: column;
+  font-size: var(--mc-pt, 14pt); line-height: 1.2;
+}
+.mc-head {
+  flex: none; display: flex; align-items: center; gap: 3mm;
+  padding-bottom: 2mm; border-bottom: 1.5pt solid #000;
+}
+.mc-jet { flex: none; width: 15mm; height: 21.5mm; }
+.mc-title { flex: 1; min-width: 0; text-align: center; }
+.mc-title h1 { margin: 0; font-size: 15pt; line-height: 1.1; overflow-wrap: anywhere; }
+.mc-facts { margin-top: 1mm; font-size: 10pt; font-weight: 600; }
+/* A category nobody checked is the loudest thing on the card: its silence
+   would otherwise read as an all-clear. */
+.mc-unchecked {
+  flex: none; margin: 2mm 0 0; padding: 1.5mm 2mm;
+  border: 1.5pt solid #000; font-size: 10.5pt; font-weight: 700;
+}
+.mc-list { flex: 1; min-height: 0; overflow: hidden; margin-top: 1.5mm; }
+.mc-list table { width: 100%; border-collapse: collapse; }
+.mc-list th {
+  padding: 0 1.5mm 0.5mm 0; border-bottom: 0.75pt solid #000;
+  font-size: 8pt; text-align: left;
+}
+.mc-list td {
+  padding: 1.2mm 1.5mm 1.2mm 0; border-bottom: 0.4pt solid #000;
+  vertical-align: top; font-weight: 700;
+}
+.mc-list .mc-km { width: 1%; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mc-list .mc-time { width: 1%; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The kind is said in letters, boxed, never by colour: this prints black on
+   white, and is read in sunlight through a scratched map window. */
+.mc-tag {
+  display: inline-block; min-width: 2.7em; margin-right: 0.5mm; padding: 0 0.6mm;
+  border: 1pt solid #000; font-size: 0.75em; font-weight: 900; text-align: center;
+}
+.mc-small { font-size: 0.75em; font-weight: 400; }
+.mc-arrow { display: inline-block; font-weight: 900; }
+.mc-none { padding-top: 3mm; font-weight: 400; }
+.mc-list .mc-more td { border-bottom: none; font-size: 9pt; font-style: italic; font-weight: 400; }
+.mc-foot {
+  flex: none; margin-top: 1.5mm; padding-top: 1.5mm; border-top: 1pt solid #000;
+  font-size: 7.5pt; line-height: 1.3;
+}
+.mc-cut { position: relative; height: 6mm; }
+.mc-cut::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 50%;
+  border-top: 1pt dashed #000;
+}
+.mc-cut span {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  padding: 0 2mm; background: #fff; font-size: 8pt;
+}
+
 @media print {
   @page { size: A4; margin: 12mm; }
 
@@ -463,6 +537,11 @@ body.print-map #map { flex: 0 0 359px; width: 703px; height: 359px; }
   body[data-print]:not([data-print~="demanding"]) #demanding-panel {
     display: none !important;
   }
+
+  /* The mission card prints alone, and only when asked for. */
+  body[data-print~="mission"] #layout { display: none !important; }
+  body[data-print~="mission"] #mission-sheet { position: static; visibility: visible; }
+  body:not([data-print~="mission"]) #mission-sheet { display: none !important; }
 
   #profile-wrap { height: auto; border: none; padding: 0; margin-top: 4mm; }
   #profile { height: 40mm; }
